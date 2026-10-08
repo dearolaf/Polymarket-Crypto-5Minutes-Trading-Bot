@@ -47,7 +47,7 @@ def run_bot() -> None:
     bot_args = sys.argv[1:] if len(sys.argv) > 1 else []
 
     print("=" * 80)
-    print("BTC 5-MIN TRADING BOT - AUTO-RESTART WRAPPER (v4)")
+    print("CRYPTO 5-MIN TRADING BOT - AUTO-RESTART WRAPPER (v5)")
     print("=" * 80)
     print(f"Platform: {sys.platform}")
     print(f"Python: {python_cmd}")

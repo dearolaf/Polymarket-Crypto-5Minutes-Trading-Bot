@@ -385,7 +385,33 @@ def render_setup() -> None:
             refresh()
 
     with tab_basic:
+        from core.updown_assets import ASSET_REGISTRY, SUPPORTED_ASSET_IDS
+
+        def _assets_from_env(values: dict) -> list[str]:
+            raw = (values.get("TRADING_ASSETS") or "").strip()
+            if raw:
+                out: list[str] = []
+                for part in raw.split(","):
+                    key = part.strip().lower()
+                    if key in SUPPORTED_ASSET_IDS and key not in out:
+                        out.append(key)
+                if out:
+                    return out
+            single = (values.get("TRADING_ASSET") or "btc").strip().lower()
+            return [single] if single in SUPPORTED_ASSET_IDS else ["btc"]
+
+        asset_labels = {aid: ASSET_REGISTRY[aid].label for aid in SUPPORTED_ASSET_IDS}
+        label_to_id = {v: k for k, v in asset_labels.items()}
+        current_assets = _assets_from_env(env)
+        default_labels = [asset_labels[a] for a in current_assets if a in asset_labels]
+
         with st.form("basic_form"):
+            selected_labels = st.multiselect(
+                "5-minute markets (up/down)",
+                options=[asset_labels[a] for a in SUPPORTED_ASSET_IDS],
+                default=default_labels,
+                help="One asset = single-market mode. Multiple assets trade in parallel (shared schedule).",
+            )
             trade_usd = st.number_input(
                 "Base stake per trade (USD)",
                 min_value=1.0,
@@ -401,13 +427,21 @@ def render_setup() -> None:
             save_basic = st.form_submit_button("Save trading settings", type="primary", use_container_width=True)
 
         if save_basic:
-            save_env(
-                {
-                    "MARKET_BUY_USD": f"{trade_usd:.2f}",
-                    "MARTINGALE_BASE_USD": f"{trade_usd:.0f}",
-                    "USE_LIGHTWEIGHT_PREDICTOR": "1" if predictor_on else "0",
-                }
-            )
+            picked = [label_to_id[lbl] for lbl in selected_labels if lbl in label_to_id]
+            if not picked:
+                picked = ["btc"]
+            asset_updates: dict[str, str] = {
+                "MARKET_BUY_USD": f"{trade_usd:.2f}",
+                "MARTINGALE_BASE_USD": f"{trade_usd:.0f}",
+                "USE_LIGHTWEIGHT_PREDICTOR": "1" if predictor_on else "0",
+            }
+            if len(picked) == 1:
+                asset_updates["TRADING_ASSET"] = picked[0]
+                asset_updates["TRADING_ASSETS"] = ""
+            else:
+                asset_updates["TRADING_ASSET"] = ""
+                asset_updates["TRADING_ASSETS"] = ",".join(picked)
+            save_env(asset_updates)
             st.success("Trading settings saved. Restart the bot to apply changes.")
             refresh()
 

@@ -180,8 +180,24 @@ from execution.risk_engine import get_risk_engine
 from monitoring.performance_tracker import get_performance_tracker
 from monitoring.grafana_exporter import get_grafana_exporter
 from feedback.learning_engine import get_learning_engine
+from core.updown_assets import (
+    ASSET_REGISTRY,
+    asset_from_slug,
+    build_slug_list,
+    coinbase_product_for_asset,
+    is_tracked_updown_slug,
+    make_trade_key,
+    parse_active_assets,
+    slug_prefix_for_asset,
+    trade_key_parts,
+)
+
 load_dotenv()
 configure_loguru_for_bot()
+
+ACTIVE_ASSETS = parse_active_assets()
+PRIMARY_ASSET = ACTIVE_ASSETS[0]
+MULTI_ASSET_MODE = len(ACTIVE_ASSETS) > 1
 # Predictor + placement + fills: use order_logger → ORDER_LOG_FILE; with ORDER_LOG_ONLY=1 also mirrors to stderr if ORDER_LOG_CONSOLE=1.
 order_logger = logger.bind(order_only=True)
 
@@ -344,13 +360,9 @@ else:
 # =============================================================================
 QUOTE_STABILITY_REQUIRED = 3      # Need only 3 valid ticks to be stable (faster startup)
 QUOTE_MIN_SPREAD = 0.001          # Both bid AND ask must be at least this
-BTC_UPDOWN_SLUG_PREFIX = (
-    os.getenv("BTC_UPDOWN_SLUG_PREFIX")
-    or os.getenv("SOL_UPDOWN_SLUG_PREFIX")  # legacy env name
-    or "btc-updown-5m"
-).strip()
+BTC_UPDOWN_SLUG_PREFIX = slug_prefix_for_asset(PRIMARY_ASSET)
 COINBASE_PRODUCT_ID = (
-    os.getenv("COINBASE_PRODUCT_ID") or "BTC-USD"
+    os.getenv("COINBASE_PRODUCT_ID") or coinbase_product_for_asset(PRIMARY_ASSET)
 ).strip()
 try:
     MARKET_INTERVAL_SECONDS = max(
@@ -369,10 +381,12 @@ except ValueError:
 
 def _is_btc_updown_slug(slug: str) -> bool:
     """
-    True only for the configured up/down slug family (default ``btc-updown-5m-<ts>``).
+    True for configured 5m up/down slug families (see ``TRADING_ASSET(S)``).
 
     Do **not** use ``'5m' in slug`` — that falsely matches other interval families.
     """
+    if is_tracked_updown_slug(slug, ACTIVE_ASSETS):
+        return True
     s = (slug or "").strip().lower()
     pfx = (BTC_UPDOWN_SLUG_PREFIX or "").strip().lower()
     if not s or not pfx:
@@ -424,7 +438,7 @@ def append_predictor_order_summary_line(
     raw = ex.strip() if ex is not None else str(project_root / "log.txt")
     path = raw if os.path.isabs(raw) else str(project_root / raw)
     try:
-        market_ts = int(trade_key[0])
+        asset_id, market_ts = trade_key_parts(trade_key, PRIMARY_ASSET)
     except (TypeError, ValueError, IndexError):
         return
     start = datetime.fromtimestamp(market_ts, tz=timezone.utc)
@@ -450,13 +464,14 @@ def append_predictor_order_summary_line(
     ms = (model_signal or "").strip().upper()
     model_part = f" | Model : {ms}" if ms in ("UP", "DOWN") else ""
     round_part = f" | round={int(round_idx)}" if round_idx is not None else ""
+    asset_part = f"asset={asset_id} | " if MULTI_ASSET_MODE else ""
     line = (
-        f"slug_start_ts={market_ts} | phase={ph} | Time: {time_s}{round_part}{model_part} | "
+        f"{asset_part}slug_start_ts={market_ts} | phase={ph} | Time: {time_s}{round_part}{model_part} | "
         f"Order : {os_} | {stake_str} | Result : {rd}\n"
     )
     fp = Path(path)
     fp.parent.mkdir(parents=True, exist_ok=True)
-    key = (path, market_ts, ph)
+    key = (path, asset_id if MULTI_ASSET_MODE else "", market_ts, ph)
     with _order_summary_lock:
         if key in _order_summary_logged:
             return
@@ -464,7 +479,7 @@ def append_predictor_order_summary_line(
         if len(_order_summary_logged) > 4096:
             cutoff = int(time.time()) - 8 * 86400
             for _k in list(_order_summary_logged):
-                if len(_k) >= 2 and _k[1] < cutoff:
+                if len(_k) >= 3 and _k[2] < cutoff:
                     _order_summary_logged.discard(_k)
         with open(fp, "a", encoding="utf-8") as fh:
             fh.write(line)
@@ -476,7 +491,7 @@ def append_predictor_order_summary_line(
 BTC_SLUG_HOURS_AHEAD_DEFAULT = 6.0
 BTC_SLUG_COUNT_CAP_DEFAULT = 96   # ~8h of 5m slots + prior interval; keeps URL under typical nginx limits
 
-BOT_VERSION = "4.0.0"
+BOT_VERSION = "5.0.0"
 
 # ---------------------------------------------------------------------------
 # Lightweight predictor mode (Coinbase-based), for next 5m direction.
@@ -923,11 +938,27 @@ class IntegratedBTCStrategy(Strategy):
         # Lightweight predictor state (Coinbase-based)
         # Do not silently disable based on interval; we want clear logs.
         self._predictor_enabled = USE_LIGHTWEIGHT_PREDICTOR
-        self._predictor = LightweightPredictor()
+        self._active_assets = list(ACTIVE_ASSETS)
+        self._multi_asset = MULTI_ASSET_MODE
+        self._primary_asset = PRIMARY_ASSET
+        self._predictors = {a: LightweightPredictor() for a in self._active_assets}
+        self._predictor = self._predictors[self._primary_asset]
+        self._latest_spot_by_asset: Dict[str, Optional[Decimal]] = {
+            a: None for a in self._active_assets
+        }
         self._latest_spot_price: Optional[Decimal] = None
+        self._latest_buy_vol_by_asset: Dict[str, float] = {a: 0.0 for a in self._active_assets}
+        self._latest_sell_vol_by_asset: Dict[str, float] = {a: 0.0 for a in self._active_assets}
         self._latest_buy_vol: float = 0.0
         self._latest_sell_vol: float = 0.0
+        self._predictor_last_trade_poll_ts_by_asset: Dict[str, Optional[float]] = {}
+        self._stake_usd_by_asset: Dict[str, Decimal] = {
+            a: MARTINGALE_BASE_USD for a in self._active_assets
+        }
         self._stake_usd: Decimal = MARTINGALE_BASE_USD
+        self._predictor_last_bet_by_asset: Dict[str, Dict[str, Any]] = {}
+        self._predictor_next_target_round_by_asset: Dict[str, int] = {}
+        self._predictor_earliest_next_order_slug_ts_by_asset: Dict[str, int] = {}
         self._martingale_max_loss_stopped: bool = False
         # Martingale: win -> base stake; loss -> double (cap MARTINGALE_MAX_STAKE_USD); lose at cap -> reset to base.
         # Submit cadence: on successful submit for slug ``S``, floor next slug start to
@@ -966,6 +997,63 @@ class IntegratedBTCStrategy(Strategy):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _spot_for_asset(self, asset_id: str) -> Optional[Decimal]:
+        if self._multi_asset:
+            return self._latest_spot_by_asset.get(asset_id)
+        if asset_id == self._primary_asset:
+            return self._latest_spot_price
+        return None
+
+    def _trade_key_slug_ts(self, trade_key: tuple) -> int:
+        _, slug_ts = trade_key_parts(trade_key, self._primary_asset)
+        return slug_ts
+
+    def _predictor_next_target_round_for(self, asset_id: str) -> int:
+        if self._multi_asset:
+            return int(self._predictor_next_target_round_by_asset.get(asset_id, 1))
+        return self._predictor_next_target_round
+
+    def _predictor_set_next_target_round_for(self, asset_id: str, rnd: int) -> None:
+        if self._multi_asset:
+            self._predictor_next_target_round_by_asset[asset_id] = int(rnd)
+        else:
+            self._predictor_next_target_round = int(rnd)
+
+    def _predictor_earliest_slug_for(self, asset_id: str) -> int:
+        if self._multi_asset:
+            return int(self._predictor_earliest_next_order_slug_ts_by_asset.get(asset_id, 0))
+        return int(self._predictor_earliest_next_order_slug_ts or 0)
+
+    def _predictor_set_earliest_slug_for(self, asset_id: str, slug_ts: int) -> None:
+        if self._multi_asset:
+            self._predictor_earliest_next_order_slug_ts_by_asset[asset_id] = int(slug_ts)
+        else:
+            self._predictor_earliest_next_order_slug_ts = int(slug_ts)
+
+    def _predictor_pending_bet(self, asset_id: str) -> Optional[Dict[str, Any]]:
+        if self._multi_asset:
+            return self._predictor_last_bet_by_asset.get(asset_id)
+        if asset_id == self._primary_asset:
+            return self._predictor_last_bet
+        return None
+
+    def _predictor_store_pending_bet(self, asset_id: str, bet: Optional[Dict[str, Any]]) -> None:
+        if self._multi_asset:
+            if bet is None:
+                self._predictor_last_bet_by_asset.pop(asset_id, None)
+            else:
+                self._predictor_last_bet_by_asset[asset_id] = bet
+        elif asset_id == self._primary_asset:
+            self._predictor_last_bet = bet
+
+    def _predictor_has_any_pending_bet(self) -> bool:
+        if self._multi_asset:
+            return bool(self._predictor_last_bet_by_asset)
+        return self._predictor_last_bet is not None
+
+    def _slug_for_asset_ts(self, asset_id: str, slug_start_ts: int) -> str:
+        return f"{slug_prefix_for_asset(asset_id)}-{slug_start_ts}"
+
     def _predictor_eval_post_end_sec(self) -> int:
         """Seconds after slug wall end before scoring (shorter in --test-mode)."""
         if self.test_mode:
@@ -987,21 +1075,24 @@ class IntegratedBTCStrategy(Strategy):
         signal: str,
         score: float,
         candle_ctx: Optional[dict],
+        asset_id: Optional[str] = None,
     ) -> bool:
         """Return False when signal should be skipped (weak or misaligned)."""
+        aid = asset_id or self._primary_asset
+        predictor = self._predictors.get(aid, self._predictor)
         if abs(score) < PREDICTOR_MIN_SCORE:
             order_logger.info(
-                f"Predictor: SKIP weak signal (|score|={abs(score):.4f} < min {PREDICTOR_MIN_SCORE})"
+                f"Predictor ({aid}): SKIP weak signal (|score|={abs(score):.4f} < min {PREDICTOR_MIN_SCORE})"
             )
             return False
 
         if PREDICTOR_REQUIRE_TREND_ALIGN:
-            prices = list(self._predictor.prices)
+            prices = list(predictor.prices)
             if len(prices) >= 7:
                 trend = prices[-1] - prices[max(0, len(prices) - 7)]
                 if (signal == "UP" and trend < 0) or (signal == "DOWN" and trend > 0):
                     order_logger.info(
-                        f"Predictor: SKIP trend misalignment (signal={signal}, trend={trend:+.6f})"
+                        f"Predictor ({aid}): SKIP trend misalignment (signal={signal}, trend={trend:+.6f})"
                     )
                     return False
 
@@ -1009,14 +1100,16 @@ class IntegratedBTCStrategy(Strategy):
             cur_ret = float(candle_ctx.get("cur_5m_return") or 0.0)
             if (signal == "UP" and cur_ret < 0) or (signal == "DOWN" and cur_ret > 0):
                 order_logger.info(
-                    f"Predictor: SKIP candle misalignment (signal={signal}, cur_5m={cur_ret:+.4%})"
+                    f"Predictor ({aid}): SKIP candle misalignment (signal={signal}, cur_5m={cur_ret:+.4%})"
                 )
                 return False
 
         if PREDICTOR_REQUIRE_VOLUME_CONFIRM:
-            total_vol = self._latest_buy_vol + self._latest_sell_vol
+            buy_v = self._latest_buy_vol_by_asset.get(aid, self._latest_buy_vol)
+            sell_v = self._latest_sell_vol_by_asset.get(aid, self._latest_sell_vol)
+            total_vol = buy_v + sell_v
             if total_vol <= 0:
-                order_logger.info("Predictor: SKIP — no volume confirmation")
+                order_logger.info(f"Predictor ({aid}): SKIP — no volume confirmation")
                 return False
 
         return True
@@ -1035,9 +1128,13 @@ class IntegratedBTCStrategy(Strategy):
         self._predictor_anchor_slug_ts = (int(now_ts) // iv) * iv
         self._predictor_next_target_round = 1
         self._predictor_earliest_next_order_slug_ts = self._predictor_slug_for_round(1)
+        for aid in self._active_assets:
+            self._predictor_set_next_target_round_for(aid, 1)
+            self._predictor_set_earliest_slug_for(aid, self._predictor_slug_for_round(1))
         self._predictor_advance_past_missed_targets(now_ts)
+        assets_label = ",".join(self._active_assets)
         order_logger.info(
-            f"Predictor odd-round schedule: round-0 slug={self._predictor_anchor_slug_ts} "
+            f"Predictor odd-round schedule [{assets_label}]: round-0 slug={self._predictor_anchor_slug_ts} "
             f"(current bar); next bet round {self._predictor_next_target_round} "
             f"slug={self._predictor_slug_for_round(self._predictor_next_target_round)}; "
             f"submit in last {SUBMIT_SECONDS_BEFORE_BOUNDARY}s before that slug opens; "
@@ -1048,45 +1145,61 @@ class IntegratedBTCStrategy(Strategy):
         """If we missed the pre-open window for the target odd round, jump to the next odd."""
         if self._predictor_anchor_slug_ts <= 0:
             return
-        if self._predictor_next_target_round % 2 == 0:
-            self._predictor_next_target_round += 1
-        while True:
-            slug = self._predictor_slug_for_round(self._predictor_next_target_round)
-            if now_ts < slug:
-                break
-            if (slug, 0) in self._predictor_attempted_keys:
-                break
-            order_logger.info(
-                f"Predictor: missed pre-open for round {self._predictor_next_target_round} "
-                f"(slug {slug}) — advancing to round {self._predictor_next_target_round + 2}"
-            )
-            self._predictor_next_target_round += 2
-        self._predictor_earliest_next_order_slug_ts = self._predictor_slug_for_round(
-            self._predictor_next_target_round
+        for aid in self._active_assets:
+            rnd = self._predictor_next_target_round_for(aid)
+            if rnd % 2 == 0:
+                rnd += 1
+                self._predictor_set_next_target_round_for(aid, rnd)
+            while True:
+                slug = self._predictor_slug_for_round(rnd)
+                if now_ts < slug:
+                    break
+                tk = make_trade_key(aid, slug, self._multi_asset)
+                if tk in self._predictor_attempted_keys:
+                    break
+                order_logger.info(
+                    f"Predictor ({aid}): missed pre-open for round {rnd} "
+                    f"(slug {slug}) — advancing to round {rnd + 2}"
+                )
+                rnd += 2
+            self._predictor_set_next_target_round_for(aid, rnd)
+            self._predictor_set_earliest_slug_for(aid, self._predictor_slug_for_round(rnd))
+        self._predictor_next_target_round = self._predictor_next_target_round_for(
+            self._primary_asset
+        )
+        self._predictor_earliest_next_order_slug_ts = self._predictor_earliest_slug_for(
+            self._primary_asset
         )
 
     def _predictor_pending_earliest_eval_ts(self) -> Optional[float]:
-        pred = self._predictor_last_bet
-        if not pred:
-            return None
-        tk = pred.get("trade_key")
-        if not isinstance(tk, tuple) or len(tk) < 1:
-            return None
-        try:
-            interval_start_ts = int(tk[0])
-        except (TypeError, ValueError):
-            return None
-        if interval_start_ts <= 0:
-            return None
-        return float(
-            interval_start_ts
-            + MARKET_INTERVAL_SECONDS
-            + self._predictor_eval_post_end_sec()
-        )
+        earliest: Optional[float] = None
+        candidates: List[Dict[str, Any]] = []
+        if self._multi_asset:
+            candidates = list(self._predictor_last_bet_by_asset.values())
+        elif self._predictor_last_bet:
+            candidates = [self._predictor_last_bet]
+        for pred in candidates:
+            tk = pred.get("trade_key")
+            if not isinstance(tk, tuple) or len(tk) < 1:
+                continue
+            try:
+                interval_start_ts = self._trade_key_slug_ts(tk)
+            except (TypeError, ValueError):
+                continue
+            if interval_start_ts <= 0:
+                continue
+            ts = float(
+                interval_start_ts
+                + MARKET_INTERVAL_SECONDS
+                + self._predictor_eval_post_end_sec()
+            )
+            if earliest is None or ts < earliest:
+                earliest = ts
+        return earliest
 
     def _schedule_predictor_eval_if_ready(self) -> None:
         """Score the last bet in a background executor (never blocks the submit window)."""
-        if self._predictor_last_bet is None or self._predictor_eval_in_progress:
+        if not self._predictor_has_any_pending_bet() or self._predictor_eval_in_progress:
             return
         earliest = self._predictor_pending_earliest_eval_ts()
         if earliest is None or time.time() < earliest:
@@ -1153,14 +1266,14 @@ class IntegratedBTCStrategy(Strategy):
         order_market: dict,
         *,
         round_idx: Optional[int] = None,
+        asset_id: Optional[str] = None,
     ) -> bool:
         """Queue one submit for ``trade_key_next`` if gates pass. Returns True if armed."""
-        if self._latest_spot_price is None:
+        aid = asset_id or trade_key_parts(trade_key_next, self._primary_asset)[0]
+        spot = self._spot_for_asset(aid)
+        if spot is None:
             return False
-        try:
-            slug_ts = int(trade_key_next[0])
-        except (TypeError, ValueError):
-            slug_ts = 0
+        slug_ts = self._trade_key_slug_ts(trade_key_next)
         with self._predictor_arm_lock:
             if trade_key_next == self.last_trade_time:
                 return False
@@ -1168,10 +1281,10 @@ class IntegratedBTCStrategy(Strategy):
                 return False
             if trade_key_next in self._predictor_armed_keys:
                 return False
-            floor_ts = int(getattr(self, "_predictor_earliest_next_order_slug_ts", 0) or 0)
+            floor_ts = self._predictor_earliest_slug_for(aid)
             if floor_ts and slug_ts > 0 and slug_ts < floor_ts:
                 return False
-            pending = self._predictor_last_bet
+            pending = self._predictor_pending_bet(aid)
             if pending and pending.get("trade_key") == trade_key_next:
                 return False
             self._predictor_armed_keys.add(trade_key_next)
@@ -1180,9 +1293,9 @@ class IntegratedBTCStrategy(Strategy):
             round_idx = self._predictor_round_index_for_slug(slug_ts)
         secs_until = float(slug_ts) - now_ts
         order_logger.info(
-            f"Predictor: arming round {round_idx} slug {slug_ts} "
-            f"({secs_until:.0f}s until open, stake=${float(self._predictor_clamped_stake()):.2f}, "
-            f"spot=${float(self._latest_spot_price):,.2f})"
+            f"Predictor ({aid}): arming round {round_idx} slug {slug_ts} "
+            f"({secs_until:.0f}s until open, stake=${float(self._predictor_clamped_stake(aid)):.2f}, "
+            f"spot=${float(spot):,.2f})"
         )
         threading.Thread(
             target=self._make_predictor_trade_sync,
@@ -1198,13 +1311,18 @@ class IntegratedBTCStrategy(Strategy):
         cur = (int(now_ts) // iv) * iv
         return cur, cur + iv, now_ts - float(cur)
 
-    def _predictor_market_for_slug_ts(self, slug_start_ts: int) -> Optional[dict]:
-        for m in self.all_btc_instruments:
-            if m.get("market_timestamp") == slug_start_ts:
-                return m
-        slug = f"{BTC_UPDOWN_SLUG_PREFIX}-{slug_start_ts}"
+    def _predictor_market_for_slug_ts(
+        self, slug_start_ts: int, asset_id: Optional[str] = None
+    ) -> Optional[dict]:
+        aid = asset_id or self._primary_asset
+        slug = self._slug_for_asset_ts(aid, slug_start_ts)
         for m in self.all_btc_instruments:
             if m.get("slug") == slug:
+                return m
+        for m in self.all_btc_instruments:
+            if m.get("market_timestamp") == slug_start_ts and asset_from_slug(
+                m.get("slug", "")
+            ) == aid:
                 return m
         return None
 
@@ -1215,43 +1333,49 @@ class IntegratedBTCStrategy(Strategy):
         """
         if not self._predictor_enabled or self._martingale_max_loss_stopped:
             return
-        if self._latest_spot_price is None:
-            return
         if self._predictor_anchor_slug_ts <= 0:
             self._predictor_init_round_schedule(now_ts)
 
         self._predictor_advance_past_missed_targets(now_ts)
 
-        rnd = self._predictor_next_target_round
-        if rnd % 2 == 0:
-            rnd += 1
-            self._predictor_next_target_round = rnd
+        for aid in self._active_assets:
+            if self._spot_for_asset(aid) is None:
+                continue
+            rnd = self._predictor_next_target_round_for(aid)
+            if rnd % 2 == 0:
+                rnd += 1
+                self._predictor_set_next_target_round_for(aid, rnd)
 
-        target_slug_ts = self._predictor_slug_for_round(rnd)
-        secs_until = float(target_slug_ts) - now_ts
-        if not (
-            SUBMIT_SECONDS_BEFORE_BOUNDARY > 0
-            and 0 < secs_until <= float(SUBMIT_SECONDS_BEFORE_BOUNDARY)
-        ):
-            return
+            target_slug_ts = self._predictor_slug_for_round(rnd)
+            secs_until = float(target_slug_ts) - now_ts
+            if not (
+                SUBMIT_SECONDS_BEFORE_BOUNDARY > 0
+                and 0 < secs_until <= float(SUBMIT_SECONDS_BEFORE_BOUNDARY)
+            ):
+                continue
 
-        floor_ts = int(self._predictor_earliest_next_order_slug_ts or 0)
-        if floor_ts and target_slug_ts < floor_ts:
-            return
+            floor_ts = self._predictor_earliest_slug_for(aid)
+            if floor_ts and target_slug_ts < floor_ts:
+                continue
 
-        trade_key = (target_slug_ts, 0)
-        order_market = self._predictor_market_for_slug_ts(target_slug_ts)
-        if order_market is None:
-            order_market = {
-                "slug": f"{BTC_UPDOWN_SLUG_PREFIX}-{target_slug_ts}",
-                "market_timestamp": target_slug_ts,
-                "yes_instrument_id": self._yes_instrument_id,
-                "yes_token_id": self._yes_token_id,
-            }
+            trade_key = make_trade_key(aid, target_slug_ts, self._multi_asset)
+            order_market = self._predictor_market_for_slug_ts(target_slug_ts, aid)
+            if order_market is None:
+                order_market = {
+                    "slug": self._slug_for_asset_ts(aid, target_slug_ts),
+                    "market_timestamp": target_slug_ts,
+                    "yes_instrument_id": self._yes_instrument_id,
+                    "yes_token_id": self._yes_token_id,
+                    "asset_id": aid,
+                }
 
-        self._predictor_arm_submit_for_next_slug(
-            now_ts, trade_key, order_market, round_idx=rnd
-        )
+            self._predictor_arm_submit_for_next_slug(
+                now_ts,
+                trade_key,
+                order_market,
+                round_idx=rnd,
+                asset_id=aid,
+            )
 
     def _seconds_to_next_interval_boundary(self) -> float:
         """Return seconds until the next 5-minute UTC boundary (slug alignment)."""
@@ -1316,8 +1440,10 @@ class IntegratedBTCStrategy(Strategy):
         logger.info("=" * 80)
         logger.info("INTEGRATED BTC STRATEGY STARTED - FIXED VERSION")
         logger.info("=" * 80)
+        assets_cfg = ",".join(self._active_assets)
         logger.info(
-            f"Config: interval={MARKET_INTERVAL_SECONDS}s slug_prefix='{BTC_UPDOWN_SLUG_PREFIX}' "
+            f"Config: interval={MARKET_INTERVAL_SECONDS}s assets=[{assets_cfg}] "
+            f"primary_slug_prefix='{BTC_UPDOWN_SLUG_PREFIX}' "
             f"| predictor={'ON' if self._predictor_enabled else 'OFF'} "
             f"(USE_LIGHTWEIGHT_PREDICTOR={os.getenv('USE_LIGHTWEIGHT_PREDICTOR','')!r}) "
             f"| submit_before_next={SUBMIT_SECONDS_BEFORE_BOUNDARY}s"
@@ -1513,6 +1639,7 @@ class IntegratedBTCStrategy(Strategy):
                                 btc_instruments.append({
                                     'instrument': instrument,
                                     'slug': slug,
+                                    'asset_id': asset_from_slug(slug) or self._primary_asset,
                                     'start_time': datetime.fromtimestamp(real_start_ts, tz=timezone.utc),
                                     'end_time': datetime.fromtimestamp(end_timestamp, tz=timezone.utc),
                                     'market_timestamp': market_timestamp,
@@ -1548,7 +1675,7 @@ class IntegratedBTCStrategy(Strategy):
         btc_instruments.sort(key=lambda x: x['market_timestamp'])
         
         logger.info("=" * 80)
-        logger.info(f"FOUND {len(btc_instruments)} BTC 5-MIN MARKETS:")
+        logger.info(f"FOUND {len(btc_instruments)} 5-MIN UP/DOWN MARKETS:")
         for i, inst in enumerate(btc_instruments):
             # A market is ACTIVE if it has started AND not yet ended
             is_active = inst['time_diff_minutes'] <= 0 and inst['end_timestamp'] > current_timestamp
@@ -1693,11 +1820,17 @@ class IntegratedBTCStrategy(Strategy):
         """
         Poll Coinbase for current price + recent trades and feed the lightweight predictor.
         """
-        from data_sources.coinbase.adapter import get_coinbase_source
+        from data_sources.coinbase.adapter import CoinbaseDataSource
 
-        coinbase = get_coinbase_source()
-        ok = await coinbase.connect()
-        if not ok:
+        clients: Dict[str, Any] = {}
+        for aid in self._active_assets:
+            src = CoinbaseDataSource(product_id=coinbase_product_for_asset(aid))
+            if await src.connect():
+                clients[aid] = src
+            else:
+                order_logger.warning(f"Predictor: cannot connect Coinbase for {aid}")
+
+        if not clients:
             logger.warning("Lightweight predictor disabled: cannot connect to Coinbase")
             self._predictor_enabled = False
             return
@@ -1707,42 +1840,50 @@ class IntegratedBTCStrategy(Strategy):
                 if _graceful_shutdown_requested:
                     await asyncio.sleep(0.5)
                     continue
-                try:
-                    price = await coinbase.get_current_price()
-                    trades = await coinbase.get_recent_trades(limit=80)
+                for aid, coinbase in clients.items():
+                    try:
+                        price = await coinbase.get_current_price()
+                        trades = await coinbase.get_recent_trades(limit=80)
 
-                    last_poll = getattr(self, "_predictor_last_trade_poll_ts", None)
-                    delta_buy = 0.0
-                    delta_sell = 0.0
-                    newest_ts = last_poll
-                    for t in trades:
-                        ts = t.get("timestamp")
-                        if ts is None:
-                            continue
-                        if last_poll is not None and ts <= last_poll:
-                            continue
-                        sz = float(t.get("size") or 0.0)
-                        side = str(t.get("side") or "").lower()
-                        if side == "buy":
-                            delta_buy += sz
-                        elif side == "sell":
-                            delta_sell += sz
-                        if newest_ts is None or ts > newest_ts:
-                            newest_ts = ts
+                        last_poll = self._predictor_last_trade_poll_ts_by_asset.get(aid)
+                        delta_buy = 0.0
+                        delta_sell = 0.0
+                        newest_ts = last_poll
+                        for t in trades:
+                            ts = t.get("timestamp")
+                            if ts is None:
+                                continue
+                            if last_poll is not None and ts <= last_poll:
+                                continue
+                            sz = float(t.get("size") or 0.0)
+                            side = str(t.get("side") or "").lower()
+                            if side == "buy":
+                                delta_buy += sz
+                            elif side == "sell":
+                                delta_sell += sz
+                            if newest_ts is None or ts > newest_ts:
+                                newest_ts = ts
 
-                    if price is not None:
-                        self._latest_spot_price = Decimal(str(price))
-                        self._latest_buy_vol = delta_buy
-                        self._latest_sell_vol = delta_sell
-                        self._predictor.update(float(price), delta_buy, delta_sell)
-                        if newest_ts is not None:
-                            self._predictor_last_trade_poll_ts = newest_ts
-                except Exception as e:
-                    logger.debug(f"Predictor loop error (non-fatal): {e}")
+                        if price is not None:
+                            spot_dec = Decimal(str(price))
+                            self._latest_spot_by_asset[aid] = spot_dec
+                            self._latest_buy_vol_by_asset[aid] = delta_buy
+                            self._latest_sell_vol_by_asset[aid] = delta_sell
+                            self._predictors[aid].update(float(price), delta_buy, delta_sell)
+                            if newest_ts is not None:
+                                self._predictor_last_trade_poll_ts_by_asset[aid] = newest_ts
+                    except Exception as e:
+                        logger.debug(f"Predictor loop error ({aid}, non-fatal): {e}")
+
+                primary = self._primary_asset
+                self._latest_spot_price = self._latest_spot_by_asset.get(primary)
+                self._latest_buy_vol = self._latest_buy_vol_by_asset.get(primary, 0.0)
+                self._latest_sell_vol = self._latest_sell_vol_by_asset.get(primary, 0.0)
 
                 await asyncio.sleep(PREDICTOR_POLL_SECONDS)
         finally:
-            await coinbase.disconnect()
+            for coinbase in clients.values():
+                await coinbase.disconnect()
 
     async def _timer_loop(self):
         """
@@ -1943,16 +2084,15 @@ class IntegratedBTCStrategy(Strategy):
                     return
                 cutoff = int(time.time()) - 4 * MARKET_INTERVAL_SECONDS
                 self._predictor_attempted_keys = {
-                    k for k in self._predictor_attempted_keys if k[0] >= cutoff
+                    k
+                    for k in self._predictor_attempted_keys
+                    if self._trade_key_slug_ts(k) >= cutoff
                 }
                 if trade_key in self._predictor_attempted_keys:
                     logger.info(f"Predictor: skip — already handled round {trade_key!r}")
                     return
-                try:
-                    slug_ts = int(trade_key[0])
-                except (TypeError, ValueError):
-                    slug_ts = 0
-                floor_ts = int(getattr(self, "_predictor_earliest_next_order_slug_ts", 0) or 0)
+                aid, slug_ts = trade_key_parts(trade_key, self._primary_asset)
+                floor_ts = self._predictor_earliest_slug_for(aid)
                 if floor_ts and slug_ts > 0 and slug_ts < floor_ts:
                     order_logger.info(
                         f"Predictor: skip — order slug start {slug_ts} < next allowed {floor_ts} "
@@ -1960,7 +2100,7 @@ class IntegratedBTCStrategy(Strategy):
                         f"submit; next arm at +{PREDICTOR_SUBMIT_AFTER_ROUND_START_SEC}s into a later slug)"
                     )
                     return
-                pending = self._predictor_last_bet
+                pending = self._predictor_pending_bet(aid)
                 if pending and pending.get("trade_key") == trade_key:
                     order_logger.info(
                         f"Predictor: skip — already have open bet for slug {trade_key!r}"
@@ -1979,28 +2119,45 @@ class IntegratedBTCStrategy(Strategy):
             with self._predictor_arm_lock:
                 self._predictor_armed_keys.discard(trade_key)
 
-    def _predictor_clamped_stake(self) -> Decimal:
-        """Dollar size for the next predictor order: ``_stake_usd`` clamped to [base, max]."""
-        return max(MARTINGALE_BASE_USD, min(self._stake_usd, MARTINGALE_MAX_STAKE_USD))
+    def _predictor_clamped_stake(self, asset_id: Optional[str] = None) -> Decimal:
+        """Dollar size for the next predictor order: stake clamped to [base, max]."""
+        aid = asset_id or self._primary_asset
+        if self._multi_asset:
+            stake = self._stake_usd_by_asset.get(aid, MARTINGALE_BASE_USD)
+        else:
+            stake = self._stake_usd
+        return max(MARTINGALE_BASE_USD, min(stake, MARTINGALE_MAX_STAKE_USD))
 
-    def _predictor_apply_martingale_from_result(self, won: bool, stake_just_risked: Decimal) -> bool:
+    def _predictor_apply_martingale_from_result(
+        self, won: bool, stake_just_risked: Decimal, asset_id: Optional[str] = None
+    ) -> bool:
         """
-        Update ``_stake_usd`` after a scored bet.
+        Update stake after a scored bet.
 
         - **Win** → ``MARTINGALE_BASE_USD``.
         - **Loss** → double ``stake_just_risked``, capped at ``MARTINGALE_MAX_STAKE_USD``.
         - **Loss at cap** → reset to ``MARTINGALE_BASE_USD`` (restart ladder).
         """
+        aid = asset_id or self._primary_asset
+
+        def _set_stake(val: Decimal) -> None:
+            if self._multi_asset:
+                self._stake_usd_by_asset[aid] = val
+            else:
+                self._stake_usd = val
+
         if won:
-            self._stake_usd = MARTINGALE_BASE_USD
+            _set_stake(MARTINGALE_BASE_USD)
             return False
         if stake_just_risked >= MARTINGALE_MAX_STAKE_USD:
-            self._stake_usd = MARTINGALE_BASE_USD
+            _set_stake(MARTINGALE_BASE_USD)
             return False
-        self._stake_usd = min(stake_just_risked * Decimal(2), MARTINGALE_MAX_STAKE_USD)
+        _set_stake(min(stake_just_risked * Decimal(2), MARTINGALE_MAX_STAKE_USD))
         return False
 
-    def _predictor_seed_last_trade_after_eval(self, scored_slug_start_ts: int) -> None:
+    def _predictor_seed_last_trade_after_eval(
+        self, asset_id: str, scored_slug_start_ts: int
+    ) -> None:
         """
         After scoring (or clearing) the bet for slug ``scored_slug_start_ts``, set
         ``last_trade_time`` so the timer does not double-fire until the next allowed pre-open
@@ -2009,16 +2166,21 @@ class IntegratedBTCStrategy(Strategy):
         is still pending.
         """
         if scored_slug_start_ts > 0:
-            self.last_trade_time = (scored_slug_start_ts, 0)
+            self.last_trade_time = make_trade_key(
+                asset_id, scored_slug_start_ts, self._multi_asset
+            )
         else:
             self.last_trade_time = -1
 
-    async def _predictor_yes_token_for_slug(self, slug_start_ts: int) -> Optional[str]:
+    async def _predictor_yes_token_for_slug(
+        self, slug_start_ts: int, asset_id: Optional[str] = None
+    ) -> Optional[str]:
         """Verified UP (Yes) CLOB token from Gamma for a slug."""
         import httpx
         import json as _json
 
-        slug = f"{BTC_UPDOWN_SLUG_PREFIX}-{slug_start_ts}"
+        aid = asset_id or self._primary_asset
+        slug = self._slug_for_asset_ts(aid, slug_start_ts)
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
@@ -2076,7 +2238,9 @@ class IntegratedBTCStrategy(Strategy):
             order_logger.debug(f"Predictor CLOB book fetch failed: {e}")
             return None
 
-    async def _predictor_fetch_candle_context(self, target_slug_ts: int) -> Optional[dict]:
+    async def _predictor_fetch_candle_context(
+        self, target_slug_ts: int, asset_id: Optional[str] = None
+    ) -> Optional[dict]:
         """
         Three 5m bars before the target slug opens:
         - bar_m2, bar_m1: last two *closed* 5m candles
@@ -2084,7 +2248,8 @@ class IntegratedBTCStrategy(Strategy):
         """
         if not PREDICTOR_USE_5M_CANDLE or target_slug_ts <= 0:
             return None
-        spot = self._latest_spot_price
+        aid = asset_id or self._primary_asset
+        spot = self._spot_for_asset(aid)
         if spot is None:
             return None
 
@@ -2093,7 +2258,7 @@ class IntegratedBTCStrategy(Strategy):
         bar_m2 = bar_m1 - MARKET_INTERVAL_SECONDS
         from data_sources.coinbase.adapter import CoinbaseDataSource
 
-        src = CoinbaseDataSource(product_id=COINBASE_PRODUCT_ID)
+        src = CoinbaseDataSource(product_id=coinbase_product_for_asset(aid))
         ctx: dict = {}
         try:
             if not await src.connect():
@@ -2142,45 +2307,48 @@ class IntegratedBTCStrategy(Strategy):
                 return
 
             is_simulation = await self.check_simulation_mode()
-            logger.info(f"Predictor mode: {'SIMULATION' if is_simulation else 'LIVE'}")
+            asset_id, slug_ts = trade_key_parts(trade_key or (), self._primary_asset)
+            if order_market and order_market.get("asset_id"):
+                asset_id = str(order_market["asset_id"]).lower()
+            predictor = self._predictors.get(asset_id, self._predictor)
+            logger.info(
+                f"Predictor ({asset_id}) mode: {'SIMULATION' if is_simulation else 'LIVE'}"
+            )
 
-            spot = self._latest_spot_price
+            spot = self._spot_for_asset(asset_id)
             if spot is None:
                 logger.warning(
-                    "Predictor: no Coinbase spot yet — this round will not retry (one shot per round)"
+                    f"Predictor ({asset_id}): no Coinbase spot yet — "
+                    "this round will not retry (one shot per round)"
                 )
                 return
 
             candle_ctx = None
             clob_imb = None
-            try:
-                slug_ts = int(trade_key[0]) if trade_key else 0
-            except (TypeError, ValueError):
-                slug_ts = 0
             yes_token = None
             if order_market:
                 yes_token = order_market.get("yes_token_id")
             if slug_ts > 0:
-                candle_ctx = await self._predictor_fetch_candle_context(slug_ts)
+                candle_ctx = await self._predictor_fetch_candle_context(slug_ts, asset_id)
                 if candle_ctx:
                     order_logger.info(
-                        f"Predictor 5m: m2={candle_ctx.get('bar_m2_return', 0):.4%} "
+                        f"Predictor ({asset_id}) 5m: m2={candle_ctx.get('bar_m2_return', 0):.4%} "
                         f"m1={candle_ctx.get('bar_m1_return', 0):.4%} "
                         f"lead={candle_ctx.get('cur_5m_return', 0):.4%}"
                     )
                 if PREDICTOR_USE_CLOB_BOOK:
                     if not yes_token:
-                        yes_token = await self._predictor_yes_token_for_slug(slug_ts)
+                        yes_token = await self._predictor_yes_token_for_slug(slug_ts, asset_id)
                     if yes_token:
                         clob_imb = await self._predictor_fetch_clob_imbalance(yes_token)
                         if clob_imb is not None:
                             order_logger.info(
-                                f"Predictor CLOB book imbalance (UP token): {clob_imb:+.3f}"
+                                f"Predictor ({asset_id}) CLOB book imbalance (UP token): {clob_imb:+.3f}"
                             )
 
-            signal, score = self._predictor.predict(candle_ctx, clob_imb)
+            signal, score = predictor.predict(candle_ctx, clob_imb)
             if signal not in ("UP", "DOWN"):
-                prices = list(self._predictor.prices)
+                prices = list(predictor.prices)
                 if len(prices) >= 2:
                     move = prices[-1] - prices[-2]
                     signal = "UP" if move >= 0 else "DOWN"
@@ -2188,12 +2356,14 @@ class IntegratedBTCStrategy(Strategy):
                 else:
                     signal = "UP"
                     score = 0.0
-            if not self._predictor_passes_quality_gates(signal, score, candle_ctx):
+            if not self._predictor_passes_quality_gates(
+                signal, score, candle_ctx, asset_id=asset_id
+            ):
                 return
 
             conf = "strong" if abs(score) >= PREDICTOR_MIN_SCORE else "weak"
             order_logger.info(
-                f"Predictor: {signal} (score={score}, confidence={conf})"
+                f"Predictor ({asset_id}): {signal} (score={score}, confidence={conf})"
             )
 
             if PREDICTOR_CONTRARIAN:
@@ -2203,16 +2373,17 @@ class IntegratedBTCStrategy(Strategy):
                 bet_outcome = signal
                 mode_note = "follow model"
             direction = "long" if bet_outcome == "UP" else "short"
-            stake = self._predictor_clamped_stake()
+            stake = self._predictor_clamped_stake(asset_id)
+            buy_v = self._latest_buy_vol_by_asset.get(asset_id, self._latest_buy_vol)
+            sell_v = self._latest_sell_vol_by_asset.get(asset_id, self._latest_sell_vol)
 
             order_logger.info("=" * 80)
-            order_logger.info("PREDICTOR TRADE")
+            order_logger.info(f"PREDICTOR TRADE ({asset_id.upper()})")
             order_logger.info(
                 f"  Model: {signal} | Score: {score} | {mode_note} → Order: {bet_outcome}"
             )
             order_logger.info(
-                f"  Spot: ${float(spot):,.2f} | BuyVol={self._latest_buy_vol:.4f} "
-                f"SellVol={self._latest_sell_vol:.4f}"
+                f"  Spot: ${float(spot):,.2f} | BuyVol={buy_v:.4f} SellVol={sell_v:.4f}"
             )
             order_logger.info(f"  Stake: ${float(stake):.2f}")
             if round_idx is not None:
@@ -2248,28 +2419,33 @@ class IntegratedBTCStrategy(Strategy):
             self._predictor_attempted_keys.add(trade_key)
             self._predictor_last_submit_ts = time.time()
 
-            try:
-                _sub_slug = int(trade_key[0])
-            except (TypeError, ValueError):
-                _sub_slug = 0
+            _sub_slug = slug_ts
             if round_idx is None and _sub_slug > 0 and self._predictor_anchor_slug_ts > 0:
                 round_idx = self._predictor_round_index_for_slug(_sub_slug)
 
             if round_idx is not None and round_idx % 2 == 1:
                 next_rnd = int(round_idx) + 2
-                self._predictor_next_target_round = next_rnd
-                self._predictor_earliest_next_order_slug_ts = self._predictor_slug_for_round(
-                    next_rnd
+                self._predictor_set_next_target_round_for(asset_id, next_rnd)
+                self._predictor_set_earliest_slug_for(
+                    asset_id, self._predictor_slug_for_round(next_rnd)
                 )
+                if asset_id == self._primary_asset:
+                    self._predictor_next_target_round = next_rnd
+                    self._predictor_earliest_next_order_slug_ts = (
+                        self._predictor_slug_for_round(next_rnd)
+                    )
                 order_logger.info(
-                    f"Predictor: next target round {next_rnd} "
+                    f"Predictor ({asset_id}): next target round {next_rnd} "
                     f"(slug {self._predictor_slug_for_round(next_rnd)}) after round {round_idx} submit"
                 )
             elif _sub_slug > 0:
-                self._predictor_earliest_next_order_slug_ts = (
-                    _sub_slug
-                    + 2 * MARKET_INTERVAL_SECONDS
+                self._predictor_set_earliest_slug_for(
+                    asset_id, _sub_slug + 2 * MARKET_INTERVAL_SECONDS
                 )
+                if asset_id == self._primary_asset:
+                    self._predictor_earliest_next_order_slug_ts = (
+                        _sub_slug + 2 * MARKET_INTERVAL_SECONDS
+                    )
 
             append_predictor_order_summary_line(
                 trade_key,
@@ -2281,16 +2457,20 @@ class IntegratedBTCStrategy(Strategy):
                 round_idx=round_idx,
             )
 
-            self._predictor_last_bet = {
-                "signal": signal,
-                "bet_outcome": bet_outcome,
-                "spot_entry": spot,
-                "stake": stake,
-                "trade_key": trade_key,
-                "round_idx": round_idx,
-                "ts": datetime.now(timezone.utc),
-                "yes_token_id": self._yes_token_id,
-            }
+            self._predictor_store_pending_bet(
+                asset_id,
+                {
+                    "signal": signal,
+                    "bet_outcome": bet_outcome,
+                    "spot_entry": spot,
+                    "stake": stake,
+                    "trade_key": trade_key,
+                    "round_idx": round_idx,
+                    "ts": datetime.now(timezone.utc),
+                    "yes_token_id": yes_token or self._yes_token_id,
+                    "asset_id": asset_id,
+                },
+            )
         except Exception as e:
             logger.error(f"Predictor trade failed: {e}")
             import traceback
@@ -2298,7 +2478,11 @@ class IntegratedBTCStrategy(Strategy):
             traceback.print_exc()
 
     async def _fetch_polymarket_resolution(
-        self, slug_start_ts: int, timeout_sec: float = 120.0, poll_sec: float = 5.0
+        self,
+        slug_start_ts: int,
+        asset_id: Optional[str] = None,
+        timeout_sec: float = 120.0,
+        poll_sec: float = 5.0,
     ) -> Optional[str]:
         """
         Determine resolution using CLOB /last-trade-price with verified token mapping.
@@ -2312,7 +2496,8 @@ class IntegratedBTCStrategy(Strategy):
         import httpx
         import json as _json
 
-        slug = f"{BTC_UPDOWN_SLUG_PREFIX}-{slug_start_ts}"
+        aid = asset_id or self._primary_asset
+        slug = self._slug_for_asset_ts(aid, slug_start_ts)
         start = time.time()
         attempt = 0
         verified_up_token: Optional[str] = None
@@ -2407,49 +2592,50 @@ class IntegratedBTCStrategy(Strategy):
         Score the last predictor bet after the slug interval has ended (wall clock) plus a short
         post-end buffer so candles / settlement are available.
         """
-        pred = self._predictor_last_bet
-        if not pred:
-            logger.debug("Predictor martingale eval: no pending bet")
+        now_wall = time.time()
+        asset_id: Optional[str] = None
+        pred: Optional[Dict[str, Any]] = None
+        for aid in self._active_assets:
+            p = self._predictor_pending_bet(aid)
+            if not p:
+                continue
+            tk0 = p.get("trade_key")
+            if not isinstance(tk0, tuple):
+                continue
+            slug_ts = self._trade_key_slug_ts(tk0)
+            if slug_ts <= 0:
+                continue
+            earliest = slug_ts + MARKET_INTERVAL_SECONDS + self._predictor_eval_post_end_sec()
+            if now_wall < earliest:
+                continue
+            if pred is None:
+                asset_id = aid
+                pred = p
+            elif slug_ts < self._trade_key_slug_ts(pred.get("trade_key") or ()):
+                asset_id = aid
+                pred = p
+
+        if not pred or not asset_id:
+            logger.debug("Predictor martingale eval: no pending bet ready")
             return
 
         tk = pred.get("trade_key")
         if not isinstance(tk, tuple) or len(tk) < 1:
-            tk = (0, 0)
-        try:
-            interval_start_ts = int(tk[0])
-        except (TypeError, ValueError):
-            interval_start_ts = 0
+            tk = make_trade_key(asset_id, 0, self._multi_asset)
+        interval_start_ts = self._trade_key_slug_ts(tk)
 
-        if interval_start_ts > 0:
-            interval_end_ts = interval_start_ts + MARKET_INTERVAL_SECONDS
-            eval_buf = self._predictor_eval_post_end_sec()
-            earliest_eval = interval_end_ts + eval_buf
-            end_utc = datetime.fromtimestamp(interval_end_ts, tz=timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            first_wait_log = True
-            while time.time() < earliest_eval:
-                rem = earliest_eval - time.time()
-                if first_wait_log:
-                    order_logger.info(
-                        f"Predictor martingale eval: waiting {rem:.0f}s — "
-                        f"slug interval ends UTC {end_utc}, "
-                        f"then +{eval_buf}s buffer before scoring"
-                    )
-                    first_wait_log = False
-                await asyncio.sleep(min(1.0, max(0.05, rem)))
-
-        now_spot = self._latest_spot_price
+        now_spot = self._spot_for_asset(asset_id)
         mode = PREDICTOR_RESOLUTION_MODE
         if mode in ("submit_vs_spot", "legacy"):
             mode = "submit_spot"
 
         if mode == "submit_spot" and now_spot is None:
             logger.warning(
-                "Predictor martingale eval: no Coinbase spot — clearing pending bet without stake update"
+                f"Predictor ({asset_id}) martingale eval: no Coinbase spot — "
+                "clearing pending bet without stake update"
             )
-            self._predictor_last_bet = None
-            self._predictor_seed_last_trade_after_eval(interval_start_ts)
+            self._predictor_store_pending_bet(asset_id, None)
+            self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
             return
 
         entry = pred.get("spot_entry")
@@ -2461,11 +2647,13 @@ class IntegratedBTCStrategy(Strategy):
         close_px: Optional[Decimal] = None
 
         if mode == "polymarket" and interval_start_ts > 0:
-            poly_result = await self._fetch_polymarket_resolution(interval_start_ts)
+            poly_result = await self._fetch_polymarket_resolution(
+                interval_start_ts, asset_id=asset_id
+            )
             if poly_result is not None:
                 realized = poly_result
                 resolution_note = (
-                    f"Polymarket website: slug {BTC_UPDOWN_SLUG_PREFIX}-{interval_start_ts} "
+                    f"Polymarket website: slug {self._slug_for_asset_ts(asset_id, interval_start_ts)} "
                     f"resolved as {realized}"
                 )
             else:
@@ -2477,7 +2665,7 @@ class IntegratedBTCStrategy(Strategy):
         if mode == "candle" and interval_start_ts > 0:  # noqa: SIM102
             from data_sources.coinbase.adapter import CoinbaseDataSource
 
-            src = CoinbaseDataSource(product_id=COINBASE_PRODUCT_ID)
+            src = CoinbaseDataSource(product_id=coinbase_product_for_asset(asset_id))
             oc = None
             try:
                 if await src.connect():
@@ -2498,7 +2686,7 @@ class IntegratedBTCStrategy(Strategy):
                 else:
                     realized = "FLAT"
                 resolution_note = (
-                    f"Coinbase 5m candle for slug interval (UTC bucket {interval_start_ts}): "
+                    f"Coinbase 5m candle ({asset_id}) for slug interval (UTC bucket {interval_start_ts}): "
                     f"open ${float(open_px):,.2f} → close ${float(close_px):,.2f} "
                     f"(Polymarket resolves from oracle/Chainlink; may differ slightly)"
                 )
@@ -2508,31 +2696,31 @@ class IntegratedBTCStrategy(Strategy):
                 )
                 if entry is None:
                     logger.warning(
-                        "Predictor martingale eval: no candle and no spot_entry — clearing pending bet"
+                        f"Predictor ({asset_id}) martingale eval: no candle and no spot_entry — clearing"
                     )
-                    self._predictor_last_bet = None
-                    self._predictor_seed_last_trade_after_eval(interval_start_ts)
+                    self._predictor_store_pending_bet(asset_id, None)
+                    self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
                     return
                 if now_spot is None:
                     logger.warning(
-                        "Predictor martingale eval: no candle and no current spot — clearing pending bet"
+                        f"Predictor ({asset_id}) martingale eval: no candle and no current spot — clearing"
                     )
-                    self._predictor_last_bet = None
-                    self._predictor_seed_last_trade_after_eval(interval_start_ts)
+                    self._predictor_store_pending_bet(asset_id, None)
+                    self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
                     return
                 move = now_spot - entry
                 realized = "UP" if move > 0 else "DOWN" if move < 0 else "FLAT"
         elif mode == "submit_spot":
             if entry is None:
-                self._predictor_last_bet = None
-                self._predictor_seed_last_trade_after_eval(interval_start_ts)
+                self._predictor_store_pending_bet(asset_id, None)
+                self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
                 return
             if now_spot is None:
                 logger.warning(
-                    "Predictor martingale eval: no Coinbase spot — clearing pending bet without stake update"
+                    f"Predictor ({asset_id}) martingale eval: no Coinbase spot — clearing pending bet"
                 )
-                self._predictor_last_bet = None
-                self._predictor_seed_last_trade_after_eval(interval_start_ts)
+                self._predictor_store_pending_bet(asset_id, None)
+                self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
                 return
             move = now_spot - entry
             realized = "UP" if move > 0 else "DOWN" if move < 0 else "FLAT"
@@ -2542,6 +2730,7 @@ class IntegratedBTCStrategy(Strategy):
         prev_stake = Decimal(str(pred.get("stake", MARTINGALE_BASE_USD)))
         model_sig = pred.get("signal")
         bet_round = pred.get("round_idx")
+        next_stake = self._predictor_clamped_stake(asset_id)
 
         # Compact log line: always the CLOB side we bought (YES=UP, NO=DOWN), not the raw model.
         order_side_for_log = str(pred.get("bet_outcome") or "?")
@@ -2555,14 +2744,15 @@ class IntegratedBTCStrategy(Strategy):
                 round_idx=bet_round,
             )
             order_logger.info(
-                "Predictor martingale eval: FLAT interval — stake unchanged "
-                f"(still ${float(self._stake_usd):.2f})"
+                f"Predictor ({asset_id}) martingale eval: FLAT interval — stake unchanged "
+                f"(still ${float(next_stake):.2f})"
             )
-            self._predictor_last_bet = None
-            self._predictor_seed_last_trade_after_eval(interval_start_ts)
+            self._predictor_store_pending_bet(asset_id, None)
+            self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
             return
 
-        self._predictor_apply_martingale_from_result(won, prev_stake)
+        self._predictor_apply_martingale_from_result(won, prev_stake, asset_id=asset_id)
+        next_stake = self._predictor_clamped_stake(asset_id)
         if not won and prev_stake >= MARTINGALE_MAX_STAKE_USD:
             order_logger.warning(
                 f"MARTINGALE: LOSS at max stake ${float(prev_stake):.2f} "
@@ -2605,7 +2795,7 @@ class IntegratedBTCStrategy(Strategy):
             order_logger.info(f"  Spot at order submit: ${float(entry):,.2f}")
         order_logger.info(
             f"  Outcome: {'WIN' if won else 'LOSS'} | Stake was: ${float(prev_stake):.2f} | "
-            f"Next submit stake: ${float(self._stake_usd):.2f}"
+            f"Next submit stake: ${float(next_stake):.2f}"
         )
         order_logger.info("=" * 80)
 
@@ -2620,52 +2810,66 @@ class IntegratedBTCStrategy(Strategy):
             else:
                 order_logger.debug("Predictor WIN (simulation) — skip auto-redeem")
 
-        self._predictor_last_bet = None
-        self._predictor_seed_last_trade_after_eval(interval_start_ts)
+        self._predictor_store_pending_bet(asset_id, None)
+        self._predictor_seed_last_trade_after_eval(asset_id, interval_start_ts)
 
         # Immediately submit the next round order now that the result is confirmed.
-        self._predictor_submit_next_round_immediately()
+        self._predictor_submit_next_round_immediately(asset_id)
 
-    def _predictor_submit_next_round_immediately(self) -> None:
+    def _predictor_submit_next_round_immediately(
+        self, asset_id: Optional[str] = None
+    ) -> None:
         """After eval confirms a result, immediately arm an order for the next available slug."""
+        aids = [asset_id] if asset_id else list(self._active_assets)
         now_ts = time.time()
         iv = MARKET_INTERVAL_SECONDS
         next_slug_ts = ((int(now_ts) // iv) + 1) * iv
 
-        rnd = self._predictor_next_target_round
-        if rnd % 2 == 0:
-            rnd += 1
-            self._predictor_next_target_round = rnd
+        for aid in aids:
+            if self._spot_for_asset(aid) is None:
+                continue
+            rnd = self._predictor_next_target_round_for(aid)
+            if rnd % 2 == 0:
+                rnd += 1
+                self._predictor_set_next_target_round_for(aid, rnd)
 
-        target_slug_ts = self._predictor_slug_for_round(rnd)
-        if target_slug_ts < next_slug_ts:
-            target_slug_ts = next_slug_ts
-            if self._predictor_anchor_slug_ts > 0:
-                rnd = self._predictor_round_index_for_slug(target_slug_ts)
-                if rnd % 2 == 0:
-                    rnd += 1
-                    target_slug_ts = self._predictor_slug_for_round(rnd)
+            target_slug_ts = self._predictor_slug_for_round(rnd)
+            if target_slug_ts < next_slug_ts:
+                target_slug_ts = next_slug_ts
+                if self._predictor_anchor_slug_ts > 0:
+                    rnd = self._predictor_round_index_for_slug(target_slug_ts)
+                    if rnd % 2 == 0:
+                        rnd += 1
+                        target_slug_ts = self._predictor_slug_for_round(rnd)
+                    self._predictor_set_next_target_round_for(aid, rnd)
+
+            self._predictor_set_earliest_slug_for(aid, target_slug_ts)
+            if aid == self._primary_asset:
                 self._predictor_next_target_round = rnd
+                self._predictor_earliest_next_order_slug_ts = target_slug_ts
 
-        self._predictor_earliest_next_order_slug_ts = target_slug_ts
+            trade_key = make_trade_key(aid, target_slug_ts, self._multi_asset)
+            order_market = self._predictor_market_for_slug_ts(target_slug_ts, aid)
+            if order_market is None:
+                order_market = {
+                    "slug": self._slug_for_asset_ts(aid, target_slug_ts),
+                    "market_timestamp": target_slug_ts,
+                    "yes_instrument_id": self._yes_instrument_id,
+                    "yes_token_id": self._yes_token_id,
+                    "asset_id": aid,
+                }
 
-        trade_key = (target_slug_ts, 0)
-        order_market = self._predictor_market_for_slug_ts(target_slug_ts)
-        if order_market is None:
-            order_market = {
-                "slug": f"{BTC_UPDOWN_SLUG_PREFIX}-{target_slug_ts}",
-                "market_timestamp": target_slug_ts,
-                "yes_instrument_id": self._yes_instrument_id,
-                "yes_token_id": self._yes_token_id,
-            }
-
-        order_logger.info(
-            f"Predictor: result confirmed — immediately submitting next round {rnd} "
-            f"(slug {target_slug_ts}, stake=${float(self._predictor_clamped_stake()):.2f})"
-        )
-        self._predictor_arm_submit_for_next_slug(
-            now_ts, trade_key, order_market, round_idx=rnd
-        )
+            order_logger.info(
+                f"Predictor ({aid}): result confirmed — immediately submitting next round {rnd} "
+                f"(slug {target_slug_ts}, stake=${float(self._predictor_clamped_stake(aid)):.2f})"
+            )
+            self._predictor_arm_submit_for_next_slug(
+                now_ts,
+                trade_key,
+                order_market,
+                round_idx=rnd,
+                asset_id=aid,
+            )
 
     # ------------------------------------------------------------------
     # Trading decision (unchanged)
@@ -3276,7 +3480,8 @@ def run_integrated_bot(simulation: bool = False, enable_grafana: bool = True, te
     global _graceful_shutdown_requested, _last_graceful_stop_reason
 
     print("=" * 80)
-    print(f"INTEGRATED POLYMARKET BTC 5-MIN TRADING BOT v{BOT_VERSION}")
+    assets_label = ",".join(ACTIVE_ASSETS).upper()
+    print(f"INTEGRATED POLYMARKET 5-MIN UP/DOWN BOT v{BOT_VERSION} [{assets_label}]")
     print("Nautilus + Predictor + Redis Control")
     print("=" * 80)
 
@@ -3499,10 +3704,14 @@ def run_integrated_bot(simulation: bool = False, enable_grafana: bool = True, te
             _range_stop = int(_hours * 3600 / _iv) + 2
             _range_stop = min(_range_stop, _cap - 1)
 
-            btc_slugs = []
-            for i in range(-1, _range_stop):
-                timestamp = unix_interval_start + (i * _iv)
-                btc_slugs.append(f"{BTC_UPDOWN_SLUG_PREFIX}-{timestamp}")
+            _per_asset_cap = max(12, _cap // max(1, len(ACTIVE_ASSETS)))
+            _range_stop = min(_range_stop, _per_asset_cap - 1)
+            btc_slugs = build_slug_list(
+                interval_seconds=_iv,
+                unix_interval_start=unix_interval_start,
+                range_stop=_range_stop,
+                active_assets=ACTIVE_ASSETS,
+            )
 
             filters = {
                 "active": True,
@@ -3519,10 +3728,11 @@ def run_integrated_bot(simulation: bool = False, enable_grafana: bool = True, te
                 )
 
             logger.info("=" * 80)
-            logger.info("LOADING BTC 5-MIN MARKETS BY SLUG")
+            logger.info("LOADING 5-MIN UP/DOWN MARKETS BY SLUG")
             logger.info(
-                f"  Interval start: {unix_interval_start} | Count: {len(btc_slugs)} "
-                f"(horizon {_hours}h, cap {_cap}; avoid Gamma GET 414 — raise cap/hours only if needed)"
+                f"  Assets: {','.join(ACTIVE_ASSETS)} | Interval start: {unix_interval_start} | "
+                f"Count: {len(btc_slugs)} (horizon {_hours}h, cap {_cap}, ~{_per_asset_cap}/asset; "
+                f"avoid Gamma GET 414 — raise cap/hours only if needed)"
             )
             logger.info(f"  First: {btc_slugs[0]}  Last: {btc_slugs[-1]}")
             logger.info("=" * 80)

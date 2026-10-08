@@ -1,4 +1,4 @@
-"""Regression tests for v4.0.0 predictor and log parsing."""
+"""Regression tests for v5.0.0 predictor, multi-asset env, and log parsing."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -48,6 +48,7 @@ def test_martingale_base_from_market_buy(monkeypatch):
 
     importlib.reload(bot)
     assert bot.MARTINGALE_BASE_USD == Decimal("10")
+    assert bot.BOT_VERSION == "5.0.0"
 
 
 def test_premium_plan_defaults(monkeypatch):
@@ -65,3 +66,29 @@ def test_premium_plan_defaults(monkeypatch):
     assert bot.PREDICTOR_MIN_SCORE == 0.55
     assert bot.PREDICTOR_POLL_SECONDS == 3
     assert bot.PREDICTOR_REQUIRE_TREND_ALIGN is True
+
+
+def test_trading_assets_env(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: True)
+    monkeypatch.setenv("TRADING_ASSETS", "btc,eth,sol")
+    monkeypatch.delenv("TRADING_ASSET", raising=False)
+    import importlib
+    import bot
+
+    importlib.reload(bot)
+    assert bot.ACTIVE_ASSETS == ["btc", "eth", "sol"]
+    assert bot.MULTI_ASSET_MODE is True
+    assert bot.make_trade_key("eth", 12345, True) == ("eth", 12345, 0)
+    assert bot.make_trade_key("eth", 12345, False) == (12345, 0)
+
+
+def test_legacy_slug_prefix_maps_asset(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: True)
+    monkeypatch.delenv("TRADING_ASSETS", raising=False)
+    monkeypatch.delenv("TRADING_ASSET", raising=False)
+    monkeypatch.setenv("BTC_UPDOWN_SLUG_PREFIX", "eth-updown-5m")
+    import importlib
+    import bot
+
+    importlib.reload(bot)
+    assert bot.ACTIVE_ASSETS == ["eth"]
