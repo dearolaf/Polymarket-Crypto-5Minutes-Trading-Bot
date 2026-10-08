@@ -1,15 +1,17 @@
 # Polymarket Crypto 5-Minute Trading Bot
 
-> **v5.0.0** — Automated **UP/DOWN** bot for [Polymarket](https://polymarket.com) 5-minute crypto markets — **BTC, ETH, SOL, XRP, DOGE, HYPE, BNB** (`{asset}-updown-5m-*`).
+> **v5.0.0 — big update:** trade **all supported Polymarket crypto 5-minute UP/DOWN markets** from one bot — not BTC-only anymore.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![v5.0.0](https://img.shields.io/badge/release-v5.0.0-green.svg)](https://github.com/dearolaf/Polymarket-BTC-5Minutes-Trading-Bot/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Uses Coinbase spot per asset, 5m candles, and Polymarket CLOB book signals. Set `TRADING_ASSET=eth` or `TRADING_ASSETS=btc,eth,sol` in `.env` (or pick markets in the dashboard). **Practice first**, then go live.
+Automated **UP/DOWN** bot for [Polymarket](https://polymarket.com) **5-minute crypto** markets. Each market uses the same pattern: **`{asset}-updown-5m-{timestamp}`** (e.g. `btc-updown-5m-…`, `eth-updown-5m-…`, `sol-updown-5m-…`).
+
+**Supported assets:** **BTC · ETH · SOL · XRP · DOGE · HYPE · BNB** — run one coin or many at once. Coinbase spot, 5m candles, and CLOB book signals **per asset**. Set `TRADING_ASSET=eth` or `TRADING_ASSETS=btc,eth,sol` in `.env`, or pick markets in the dashboard (**Setup → Trading**). **Practice first**, then go live.
 
 ### What's new in v5.0.0
-- **Crypto multi-asset 5m** — btc, eth, sol, xrp, doge, hype, bnb up/down slugs in one bot
+- **All-crypto 5m trading** — one bot for every supported `{asset}-updown-5m-*` market (multi-asset mode)
 - **Min-score filter** — weak predictor signals are skipped (not just logged)
 - **Stake sync** — `MARKET_BUY_USD` drives martingale base stake
 - **Premium edition** — separate build with enhanced predictor, analytics, and advanced dashboard; also supports **15-minute** and **1-hour** up/down trading bots (not included in this free repo)
