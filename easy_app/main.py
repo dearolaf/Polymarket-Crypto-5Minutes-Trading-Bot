@@ -178,7 +178,7 @@ def render_dashboard() -> None:
         else:
             st.info("Bot is stopped")
     with r2:
-        base = env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD", "10.0")
+        base = env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD", "1000")
         mg_max = env.get("MARTINGALE_MAX_STAKE_USD", "16")
         predictor = "On" if env.get("USE_LIGHTWEIGHT_PREDICTOR", "1") == "1" else "Off"
         st.caption(f"Base stake **${base}** (max **${mg_max}**) · Predictor **{predictor}**")
@@ -416,7 +416,7 @@ def render_setup() -> None:
                 "Base stake per trade (USD)",
                 min_value=1.0,
                 max_value=100.0,
-                value=float(env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD") or "10.0"),
+                value=float(env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD") or "1000"),
                 step=1.0,
                 help="Used as martingale base stake. Synced to MARKET_BUY_USD and MARTINGALE_BASE_USD.",
             )

@@ -74,7 +74,7 @@ pytest tests/                        # run release tests
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `TRADING_ASSET` / `TRADING_ASSETS` | `btc` | Single asset or comma-separated list |
-| `MARKET_BUY_USD` | `10.0` | Base stake (synced to martingale) |
+| `MARKET_BUY_USD` | `1000` | Base stake (synced to martingale) |
 | `PREDICTOR_MIN_SCORE` | `0.50` | Skip trades below this \|score\| |
 | `MARTINGALE_MAX_STAKE_USD` | `16` | Martingale cap |
 | `BOT_PLAN` | `free` | Premium edition uses `premium` |
