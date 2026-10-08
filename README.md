@@ -45,7 +45,6 @@ Uses Coinbase spot per asset, 5m candles, and Polymarket CLOB book signals. Set 
 | Log downloads | — | ✓ |
 
 **Get Premium:** **[Premium Version](https://polymarkettool-272623624738.us-central1.run.app/premium)** — 5m, **15m**, and **1h** crypto up/down bots, full dashboard, and priority support.  
-**Support:** [@dearolaf](https://t.me/dearolaf) · [WhatsApp +1 319 210 1283](https://wa.me/13192101283) · [xapple126@gmail.com](mailto:xapple126@gmail.com)  
 After purchase: use the Premium edition repo/build (`BOT_PLAN=premium` in `.env`).
 
 ---
@@ -90,12 +89,28 @@ See `.env.example` for the full list.
 
 ---
 
-## Community
+## Links
 
-- **Premium (5m + 15m + 1h):** [polymarkettool/premium](https://polymarkettool-272623624738.us-central1.run.app/premium)
-- **Keys:** [Generate Keys](https://polymarkettool-272623624738.us-central1.run.app/)
-- **Support:** [Telegram @dearolaf](https://t.me/dearolaf) · [WhatsApp +1 319 210 1283](https://wa.me/13192101283) · [xapple126@gmail.com](mailto:xapple126@gmail.com)
-- **Issues:** [GitHub](https://github.com/dearolaf/Polymarket-BTC-5Minutes-Trading-Bot/issues)
+| | |
+|---|---|
+| Premium (5m · 15m · 1h) | [polymarkettool/premium](https://polymarkettool-272623624738.us-central1.run.app/premium) |
+| API keys | [Generate Keys](https://polymarkettool-272623624738.us-central1.run.app/) |
+| Bug reports | [GitHub Issues](https://github.com/dearolaf/Polymarket-BTC-5Minutes-Trading-Bot/issues) |
 
-If this project helps you, a small tip is always appreciated (never required) — thank you for your support.  
-**USDT / USDC (ERC20, BEP20):** `0x60ef6388d63016a457e2bf880f34b4d4052d0ef5`
+---
+
+## Contact
+
+Setup, Premium, or bot questions — reach out anytime.
+
+| Channel | |
+|---------|---|
+| Telegram | [@dearolaf](https://t.me/dearolaf) |
+| WhatsApp | [+1 319 210 1283](https://wa.me/13192101283) |
+| Email | [xapple126@gmail.com](mailto:xapple126@gmail.com) |
+
+---
+
+**Support the project** — If this repo helps you, a small tip is always appreciated (never required). Thank you.
+
+`0x60ef6388d63016a457e2bf880f34b4d4052d0ef5` · USDT / USDC · ERC20 · BEP20
