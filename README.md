@@ -95,6 +95,7 @@ See `.env.example` for the full list.
 
 | | |
 |---|---|
+| Telegram channel | [@Signal5MinOfficial](https://t.me/Signal5MinOfficial) — setup, updates & tips |
 | Premium (5m · 15m · 1h) | [polymarkettool/premium](https://polymarkettool-272623624738.us-central1.run.app/premium) |
 | API keys | [Generate Keys](https://polymarkettool-272623624738.us-central1.run.app/) |
 | Bug reports | [GitHub Issues](https://github.com/dearolaf/Polymarket-BTC-5Minutes-Trading-Bot/issues) |
@@ -107,7 +108,8 @@ Setup, Premium, or bot questions — reach out anytime.
 
 | Channel | |
 |---------|---|
-| Telegram | [@dearolaf](https://t.me/dearolaf) |
+| Telegram (updates) | [@Signal5MinOfficial](https://t.me/Signal5MinOfficial) |
+| Telegram (support) | [@dearolaf](https://t.me/dearolaf) |
 | WhatsApp | [+1 319 210 1283](https://wa.me/13192101283) |
 | Email | [xapple126@gmail.com](mailto:xapple126@gmail.com) |
 
