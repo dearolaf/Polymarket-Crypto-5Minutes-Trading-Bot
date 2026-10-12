@@ -14,7 +14,7 @@ Automated **UP/DOWN** bot for [Polymarket](https://polymarket.com) **5-minute cr
 - **All-crypto 5m trading** — one bot for every supported `{asset}-updown-5m-*` market (multi-asset mode)
 - **Min-score filter** — weak predictor signals are skipped (not just logged)
 - **Stake sync** — `MARKET_BUY_USD` drives martingale base stake
-- **Premium edition** — separate build with enhanced predictor, analytics, and advanced dashboard; also supports **15-minute** and **1-hour** up/down trading bots (not included in this free repo)
+- **Premium edition** — separate build with **advanced predictor logic** (stricter multi-factor filters vs free), analytics, and advanced dashboard; also **15-minute** and **1-hour** up/down bots (not in this free repo)
 - **Simulation fix** — practice mode logs to `log.txt` only (no random paper trades)
 - **Test mode** in dashboard + improved auto-restart logging (`logs/runner.log`)
 
@@ -35,19 +35,21 @@ Automated **UP/DOWN** bot for [Polymarket](https://polymarket.com) **5-minute cr
 
 ## Free vs Premium
 
-| | **Free (this repo)** | **Premium** |
-|--|----------------------|-------------|
+| | **Free (this repo)** | **Premium edition** |
+|--|----------------------|---------------------|
 | **5-minute** up/down bot | ✓ | ✓ |
 | **15-minute** up/down bot | — | ✓ |
 | **1-hour** up/down bot | — | ✓ |
+| **Predictor** | **Standard** — Coinbase spot + 5m candles + CLOB book ensemble; min-score filter (0.50 default); 5s poll | **Advanced** — settlement-focused scoring with extra quality gates (weak-signal & chop filters, multi-factor agreement, trend/candle alignment, CLOB mid bands); tunable min score & 3s poll; optional score-scaled stakes & stake modes |
 | Dashboard, practice/live | ✓ | ✓ |
-| Min-score signal filter | ✓ (0.50 default) | ✓ (tunable + extra filters) |
 | Performance analytics | — | ✓ |
-| Advanced settings | — | ✓ |
+| Advanced settings (predictor, timing, martingale) | Basic setup only | ✓ |
 | Log downloads | — | ✓ |
 
-**Get Premium:** **[Premium Version](https://polymarkettool-272623624738.us-central1.run.app/premium)** — 5m, **15m**, and **1h** crypto up/down bots, full dashboard, and priority support.  
-After purchase: use the Premium edition repo/build (`BOT_PLAN=premium` in `.env`).
+**Predictor — free vs Premium:** Both use the same data sources (spot, 5m bars, order book). The **free** build runs the **standard** lightweight predictor with straightforward defaults. **Premium** ships **advanced predictor logic** — more layers before a trade is allowed (skip weak/choppy setups, require agreement across signals, stricter alignment with trend and the live 5m bar, and finer tuning in the dashboard). Fewer trades, higher bar for entries.
+
+**Get Premium:** **[Premium Version](https://polymarkettool-272623624738.us-central1.run.app/premium)** — advanced predictor, 5m + **15m** + **1h** bots, full dashboard, priority support.  
+After purchase: use the **Premium edition** repo/build (`BOT_PLAN=premium` in `.env`).
 
 ---
 
