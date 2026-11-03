@@ -1,4 +1,4 @@
-"""Regression tests for v5.0.0 predictor, multi-asset env, and log parsing."""
+"""Regression tests for v6.0.0 predictor, multi-asset env, and log parsing."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -48,7 +48,7 @@ def test_martingale_base_from_market_buy(monkeypatch):
 
     importlib.reload(bot)
     assert bot.MARTINGALE_BASE_USD == Decimal("10")
-    assert bot.BOT_VERSION == "5.0.0"
+    assert bot.BOT_VERSION == "6.0.0"
 
 
 def test_premium_plan_defaults(monkeypatch):

@@ -1,5 +1,5 @@
 """
-Polymarket BTC 5-Min Bot — Premium web dashboard.
+Polymarket Crypto 5-Min Bot — Free web dashboard.
 """
 from __future__ import annotations
 
@@ -18,16 +18,22 @@ st.set_option("client.toolbarMode", "viewer")
 
 from easy_app.config import (
     ADVANCED_DEFAULTS,
+    APP_VERSION,
     ENV_PATH,
     GENERATE_KEYS_URL,
+    GITHUB_REPO_URL,
+    PREMIUM_URL,
     PROJECT_ROOT,
     SUPPORT_EMAIL,
+    TELEGRAM_CHANNEL_URL,
     TELEGRAM_URL,
     WHATSAPP_DISPLAY,
     WHATSAPP_URL,
+    clamp_stake_usd,
     credentials_complete,
     ensure_env_file,
     load_env,
+    log_file_meta,
     save_env,
     tail_file,
 )
@@ -52,7 +58,7 @@ from easy_app.stats import (
 from easy_app.theme import inject_premium_theme
 
 st.set_page_config(
-    page_title="Polymarket BTC Bot",
+    page_title="Polymarket Crypto 5-Min Bot",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -80,11 +86,12 @@ def render_upgrade_cta(title: str = "Upgrade to Premium") -> None:
         f"""
         <div class="upgrade-box">
             <h3>{title}</h3>
-            <p>Enhanced predictor logic, martingale recovery, performance analytics, advanced settings, and log downloads are Premium features.</p>
+            <p>Advanced predictor gates, Limit Signal / Limit scalp, Performance charts, advanced settings, and log downloads are Premium features.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    st.link_button("Get Premium", PREMIUM_URL, use_container_width=True, type="primary")
     st.markdown(render_upgrade_contact_markdown())
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -95,15 +102,48 @@ def render_upgrade_cta(title: str = "Upgrade to Premium") -> None:
         st.link_button(f"Email {SUPPORT_EMAIL}", f"mailto:{SUPPORT_EMAIL}", use_container_width=True)
 
 
+def _active_assets_from_env(env: dict) -> list[str]:
+    from core.updown_assets import SUPPORTED_ASSET_IDS
+
+    raw = (env.get("TRADING_ASSETS") or "").strip()
+    if raw:
+        out: list[str] = []
+        for part in raw.split(","):
+            key = part.strip().lower()
+            if key in SUPPORTED_ASSET_IDS and key not in out:
+                out.append(key)
+        if out:
+            return out
+    single = (env.get("TRADING_ASSET") or "btc").strip().lower()
+    return [single] if single in SUPPORTED_ASSET_IDS else ["btc"]
+
+
+def render_asset_pills(assets: list[str]) -> None:
+    from core.updown_assets import ASSET_REGISTRY
+
+    pills = " ".join(
+        f'<span class="asset-pill">{ASSET_REGISTRY[a].label if a in ASSET_REGISTRY else a.upper()}</span>'
+        for a in assets
+    )
+    st.markdown(pills, unsafe_allow_html=True)
+
+
 def render_status_sidebar() -> str:
     status = get_status()
     badge = plan_badge_class()
     label = plan_label()
+    env = load_env()
+    assets = _active_assets_from_env(env)
 
     with st.sidebar:
-        st.markdown(f'<span class="{badge}">{label} Plan</span>', unsafe_allow_html=True)
-        st.title("BTC 5-Min Bot")
-        st.caption("Modern dashboard — no coding required")
+        st.markdown(
+            f'<span class="{badge}">{label} Plan</span>'
+            f'<span class="version-chip">v{APP_VERSION}</span>',
+            unsafe_allow_html=True,
+        )
+        st.title("Crypto 5-Min Bot")
+        st.caption("Multi-asset UP/DOWN · no coding required")
+        render_asset_pills(assets)
         st.divider()
 
         if status.get("running"):
@@ -132,7 +172,7 @@ def render_status_sidebar() -> str:
         if st.button("↻ Refresh", use_container_width=True):
             refresh()
 
-        st.caption(f"Updated {datetime.now().strftime('%H:%M:%S')}")
+        st.caption(f"Updated {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
 
     return page
 
@@ -153,11 +193,13 @@ def render_dashboard() -> None:
     status = get_status()
     stats = compute_stats()
     env = load_env()
+    assets = _active_assets_from_env(env)
 
     render_hero(
         "Trading Dashboard",
-        "Live overview of bot status, win rate, and recent BTC 5-minute signals.",
+        "Live overview of bot status, win rate, and recent crypto 5-minute UP/DOWN signals.",
     )
+    render_asset_pills(assets)
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Win rate", f"{stats.win_rate}%")
@@ -176,15 +218,20 @@ def render_dashboard() -> None:
         if status.get("running"):
             st.success(f"Bot running — {status.get('mode_label')}")
         else:
-            st.info("Bot is stopped")
+            st.info("Bot is stopped — open **Control** to start practice")
     with r2:
-        base = env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD", "1000")
+        base = clamp_stake_usd(env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD"))
         mg_max = env.get("MARTINGALE_MAX_STAKE_USD", "16")
         predictor = "On" if env.get("USE_LIGHTWEIGHT_PREDICTOR", "1") == "1" else "Off"
-        st.caption(f"Base stake **${base}** (max **${mg_max}**) · Predictor **{predictor}**")
+        redeem = "On" if env.get("POLYMARKET_AUTO_REDEEM", "1") == "1" else "Off"
+        st.caption(
+            f"Base stake **${base:g}** (max **${mg_max}**) · Predictor **{predictor}** · Auto-redeem **{redeem}**"
+        )
     with r3:
         if status.get("running"):
             st.caption(f"Uptime: **{format_uptime(status.get('started_at'))}**")
+        else:
+            st.caption(f"Markets: **{', '.join(a.upper() for a in assets)}**")
 
     st.subheader("Recent signals")
     rows = trades_to_table(stats.trades, limit=20)
@@ -200,23 +247,19 @@ def render_dashboard() -> None:
 
 
 def render_performance() -> None:
-    if not is_premium():
-        render_hero(
-            "Performance Analytics",
-            "Premium feature — unlock charts, win-rate breakdown, and result history.",
-        )
-        render_upgrade_cta()
-        return
-
     stats = compute_stats()
+    premium = is_premium()
 
     render_hero(
         "Performance Analytics",
-        "Win rate, direction breakdown, and cumulative results from log.txt.",
+        "Win rate and direction breakdown from log.txt."
+        + (" Charts unlock on Premium." if not premium else " Charts, streaks, and full history."),
     )
 
     if stats.total_scored == 0:
         st.info("No scored trades yet. Run the bot in practice mode to build history.")
+        if not premium:
+            st.caption("Charts and downloadable history remain Premium — basic stats are free.")
         return
 
     m1, m2, m3, m4 = st.columns(4)
@@ -227,26 +270,12 @@ def render_performance() -> None:
     m3.metric("UP win rate", f"{up_wr}%", help=f"{stats.up_wins}/{stats.up_orders} UP orders won")
     m4.metric("DOWN win rate", f"{down_wr}%", help=f"{stats.down_wins}/{stats.down_orders} DOWN orders won")
 
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.subheader("Cumulative wins")
-        if stats.chart_cumulative_wins:
-            chart_df = pd.DataFrame(
-                {"Cumulative wins": stats.chart_cumulative_wins},
-                index=stats.chart_labels,
-            )
-            st.line_chart(chart_df)
-        else:
-            st.caption("Not enough data for chart.")
-
-    with col_b:
-        st.subheader("Wins vs losses")
-        outcome_df = pd.DataFrame(
-            {"Count": [stats.wins, stats.losses]},
-            index=["Wins", "Losses"],
-        )
-        st.bar_chart(outcome_df)
+    streak_label = "—"
+    if stats.streak_type == "win":
+        streak_label = f"{stats.current_streak}W"
+    elif stats.streak_type == "loss":
+        streak_label = f"{stats.current_streak}L"
+    st.caption(f"Current streak: **{streak_label}** · Pending: **{stats.pending}**")
 
     st.subheader("Recent result sequence")
     if stats.recent_results:
@@ -259,6 +288,30 @@ def render_performance() -> None:
         st.markdown(seq_html, unsafe_allow_html=True)
     else:
         st.caption("No results to display.")
+
+    if premium:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.subheader("Cumulative wins")
+            if stats.chart_cumulative_wins:
+                chart_df = pd.DataFrame(
+                    {"Cumulative wins": stats.chart_cumulative_wins},
+                    index=stats.chart_labels,
+                )
+                st.line_chart(chart_df)
+            else:
+                st.caption("Not enough data for chart.")
+        with col_b:
+            st.subheader("Wins vs losses")
+            outcome_df = pd.DataFrame(
+                {"Count": [stats.wins, stats.losses]},
+                index=["Wins", "Losses"],
+            )
+            st.bar_chart(outcome_df)
+    else:
+        st.divider()
+        st.caption("**Premium:** cumulative win chart, wins vs losses bar chart, and log downloads.")
+        render_upgrade_cta("Unlock Performance charts")
 
 
 def render_control() -> None:
@@ -416,13 +469,18 @@ def render_setup() -> None:
                 "Base stake per trade (USD)",
                 min_value=1.0,
                 max_value=100.0,
-                value=float(env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD") or "1000"),
+                value=clamp_stake_usd(env.get("MARTINGALE_BASE_USD") or env.get("MARKET_BUY_USD")),
                 step=1.0,
-                help="Used as martingale base stake. Synced to MARKET_BUY_USD and MARTINGALE_BASE_USD.",
+                help="Default $1. Synced to MARKET_BUY_USD and MARTINGALE_BASE_USD. Start small in practice.",
             )
             predictor_on = st.checkbox(
                 "Use smart predictor (recommended)",
                 value=(env.get("USE_LIGHTWEIGHT_PREDICTOR", "1") == "1"),
+            )
+            auto_redeem = st.checkbox(
+                "Auto-redeem winning positions",
+                value=(env.get("POLYMARKET_AUTO_REDEEM", "1") == "1"),
+                help="Claim winning shares automatically after settlement.",
             )
             save_basic = st.form_submit_button("Save trading settings", type="primary", use_container_width=True)
 
@@ -430,10 +488,12 @@ def render_setup() -> None:
             picked = [label_to_id[lbl] for lbl in selected_labels if lbl in label_to_id]
             if not picked:
                 picked = ["btc"]
+            stake = clamp_stake_usd(trade_usd)
             asset_updates: dict[str, str] = {
-                "MARKET_BUY_USD": f"{trade_usd:.2f}",
-                "MARTINGALE_BASE_USD": f"{trade_usd:.0f}",
+                "MARKET_BUY_USD": f"{stake:.2f}",
+                "MARTINGALE_BASE_USD": f"{stake:.0f}",
                 "USE_LIGHTWEIGHT_PREDICTOR": "1" if predictor_on else "0",
+                "POLYMARKET_AUTO_REDEEM": "1" if auto_redeem else "0",
             }
             if len(picked) == 1:
                 asset_updates["TRADING_ASSET"] = picked[0]
@@ -522,39 +582,47 @@ def render_setup() -> None:
     st.caption("Keys and settings stay on your machine in `.env` only — never share this file.")
 
 
+def _render_log_panel(path: Path, *, max_lines: int = 150, download_name: str | None = None) -> None:
+    meta = log_file_meta(path)
+    st.markdown(f'<p class="log-meta">{path.name} · {meta}</p>', unsafe_allow_html=True)
+    content = tail_file(path, max_lines=max_lines)
+    emptyish = (
+        content.startswith("(No log")
+        or content.startswith("(Log file is empty")
+        or content.startswith("(Could not read")
+    )
+    if emptyish:
+        st.markdown(f'<div class="log-empty">{content}</div>', unsafe_allow_html=True)
+    else:
+        st.code(content, language=None)
+    if is_premium() and path.exists() and download_name:
+        st.download_button(
+            f"Download {download_name}",
+            path.read_text(encoding="utf-8", errors="replace"),
+            file_name=download_name,
+            mime="text/plain",
+        )
+    elif not is_premium():
+        st.caption("Downloads are **Premium**. View logs here for free — see **Plans** to upgrade.")
+
+
 def render_logs() -> None:
-    render_hero("Activity Logs", "Trade summary and detailed order log.")
+    render_hero("Activity Logs", "Trade summary, order detail, and runner auto-restart log.")
 
     log_path = PROJECT_ROOT / "log.txt"
     orders_path = PROJECT_ROOT / "logs" / "orders.log"
+    runner_path = PROJECT_ROOT / "logs" / "runner.log"
 
-    tab1, tab2 = st.tabs(["Trade summary (log.txt)", "Order detail (orders.log)"])
+    tab1, tab2, tab3 = st.tabs(
+        ["Trade summary (log.txt)", "Order detail (orders.log)", "Runner (runner.log)"]
+    )
 
     with tab1:
-        content = tail_file(log_path, max_lines=150)
-        st.code(content, language=None)
-        if is_premium() and log_path.exists():
-            st.download_button(
-                "Download log.txt",
-                log_path.read_text(encoding="utf-8", errors="replace"),
-                file_name="log.txt",
-                mime="text/plain",
-            )
-        elif not is_premium():
-            st.caption("Log downloads are available on the **Premium** plan. See **Plans** to upgrade.")
-
+        _render_log_panel(log_path, max_lines=150, download_name="log.txt")
     with tab2:
-        content = tail_file(orders_path, max_lines=150)
-        st.code(content, language=None)
-        if is_premium() and orders_path.exists():
-            st.download_button(
-                "Download orders.log",
-                orders_path.read_text(encoding="utf-8", errors="replace"),
-                file_name="orders.log",
-                mime="text/plain",
-            )
-        elif not is_premium():
-            st.caption("Log downloads are available on the **Premium** plan. See **Plans** to upgrade.")
+        _render_log_panel(orders_path, max_lines=150, download_name="orders.log")
+    with tab3:
+        _render_log_panel(runner_path, max_lines=120, download_name="runner.log")
 
 
 def render_plans() -> None:
@@ -617,33 +685,34 @@ def render_help() -> None:
 
         1. **Install once** — `Install.bat` (Windows) or `./install.sh` (Mac/Ubuntu)
         2. **Open dashboard** — `Start.bat` or `./start.sh`
-        3. **Setup** → paste keys from **[Generate Keys]({GENERATE_KEYS_URL})** → Save
-        4. **Control** → **Start practice** (simulation, no real money)
-        5. **Performance** (Premium) → track win rate as trades complete
-        6. When ready → **Start live** (real USDC on Polymarket)
+        3. **Setup → Trading** — pick markets (BTC / ETH / SOL / …), keep stake at **$1**, enable predictor
+        4. **Setup → API keys** — paste keys from **[Generate Keys]({GENERATE_KEYS_URL})** → Save
+        5. **Control** → **Start practice** (simulation, no real money)
+        6. **Performance** → basic win rate & result sequence (charts are Premium)
+        7. When ready → **Start live** (real USDC on Polymarket)
 
         ### Plans
 
-        - **Free** — run the bot with standard predictor defaults, basic dashboard, and log viewer
-        - **Premium** — enhanced predictor logic, martingale recovery, performance analytics, advanced settings, log downloads, and priority support
+        - **Free (v{APP_VERSION})** — multi-asset 5m bot, standard predictor, basic Performance, log viewer, $1 default stake
+        - **Premium** — advanced predictor gates, Limit Signal / Limit scalp, charts, advanced settings, log downloads, Firebase login, priority support
 
-        **Why Premium is better:** smarter multi-source predictor (Coinbase + 5m candles + CLOB book),
-        tunable signal filters, custom timing, full win-rate analytics, and direct 1-on-1 help.
+        **Get Premium:** [Premium Version]({PREMIUM_URL})
 
-        To upgrade to Premium, contact:
+        Contact:
 
-        - Telegram: [@dearolaf]({TELEGRAM_URL})
+        - Telegram updates: [@Signal5MinOfficial]({TELEGRAM_CHANNEL_URL})
+        - Telegram support: [@dearolaf]({TELEGRAM_URL})
         - WhatsApp: [{WHATSAPP_DISPLAY}]({WHATSAPP_URL})
         - Email: [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})
 
-        ### Premium features
+        ### Free vs Premium pages
 
-        | Page | What you get |
-        |------|----------------|
-        | **Dashboard** | Live status, win rate, streak, recent signals table |
-        | **Performance** | Charts, UP/DOWN breakdown, result sequence |
-        | **Setup → Advanced** | Martingale, timing, predictor score, auto-redeem |
-        | **Logs** | Downloadable trade and order logs |
+        | Page | Free | Premium |
+        |------|------|---------|
+        | **Dashboard** | Status, win rate, streak, signals | Same + richer console |
+        | **Performance** | Metrics + result sequence | + charts |
+        | **Setup → Advanced** | — | Martingale, timing, min score |
+        | **Logs** | View summary / orders / runner | + downloads |
 
         ### Terminal (developers)
 
@@ -654,7 +723,7 @@ def render_help() -> None:
 
         ### Support
 
-        - [GitHub Issues](https://github.com/dearolaf/Polymarket-BTC-5Minutes-Trading-Bot/issues)
+        - [GitHub Issues]({GITHUB_REPO_URL}/issues)
         - Telegram: [@dearolaf]({TELEGRAM_URL})
 
         **Risk warning:** Trading involves loss. Always start in practice mode.

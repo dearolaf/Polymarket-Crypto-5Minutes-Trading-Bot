@@ -10,12 +10,14 @@ PLAN_PREMIUM = "premium"
 
 FREE_FEATURES: List[str] = [
     "Web dashboard (Easy Mode)",
-    "Practice & live trading on BTC 5-minute markets",
+    "Practice & live trading on crypto 5-minute markets (BTC · ETH · SOL · XRP · DOGE · HYPE · BNB)",
+    "Multi-asset mode — trade one coin or several at once",
     "Polymarket API key setup",
-    "Basic trade settings (stake size, predictor on/off)",
-    "Standard predictor with default scoring",
-    "Dashboard overview & recent signal table",
-    "Activity log viewer (read-only)",
+    "Basic trade settings (stake size, predictor on/off, auto-redeem)",
+    "Standard predictor with min-score filter (0.50 default)",
+    "Dashboard overview, basic Performance stats & recent signals",
+    "Activity logs (summary, orders, runner) — view in browser",
+    "Safe $1 default stake (synced martingale base)",
     "24/7 auto-restart bot runner",
     "Community support (GitHub Issues)",
 ]
@@ -66,8 +68,8 @@ PREMIUM_WHY_BETTER: List[Dict[str, str]] = [
     },
     {
         "title": "Performance analytics",
-        "free": "Basic dashboard counts only.",
-        "premium": "Full Performance page — win rate, streaks, cumulative win charts, UP/DOWN win breakdown, and visual result history to measure what is working.",
+        "free": "Basic Performance page — win rate, UP/DOWN rates, streak, and result sequence (no charts).",
+        "premium": "Full Performance page — cumulative win charts, wins vs losses bars, and richer history to measure what is working.",
     },
     {
         "title": "Advanced dashboard controls",
@@ -96,6 +98,7 @@ FREE_LIMITATIONS: List[str] = [
     "No trend/candle alignment filters (Premium defaults)",
     "No Performance charts or advanced settings tab",
     "Cannot download trade or order logs",
+    "No Limit Signal / Limit scalp / Firebase login (Premium)",
     "No priority direct support",
 ]
 

@@ -38,8 +38,8 @@ html, body, [class*="css"] {
 
 .free-badge {
     display: inline-block;
-    background: rgba(148, 163, 184, 0.2);
-    color: #cbd5e1;
+    background: rgba(34, 211, 238, 0.12);
+    color: #67e8f9;
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -47,7 +47,41 @@ html, body, [class*="css"] {
     padding: 0.25rem 0.6rem;
     border-radius: 4px;
     margin-bottom: 0.5rem;
-    border: 1px solid rgba(148, 163, 184, 0.3);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+}
+
+.version-chip {
+    display: inline-block;
+    color: #94a3b8;
+    font-size: 0.75rem;
+    margin-left: 0.35rem;
+}
+
+.asset-pill {
+    display: inline-block;
+    background: rgba(59, 130, 246, 0.15);
+    color: #93c5fd;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    margin: 0 0.25rem 0.25rem 0;
+}
+
+.log-meta {
+    color: #64748b;
+    font-size: 0.8rem;
+    margin: 0.35rem 0 0.75rem 0;
+}
+
+.log-empty {
+    background: rgba(30, 41, 59, 0.45);
+    border: 1px dashed rgba(148, 163, 184, 0.25);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    color: #94a3b8;
+    text-align: center;
 }
 
 .upgrade-box {

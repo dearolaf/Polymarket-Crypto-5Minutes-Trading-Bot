@@ -44,11 +44,45 @@ ADVANCED_DEFAULTS: Dict[str, str] = {
     "BOT_VERBOSE": "0",
 }
 
+# Default stake when .env is missing or has an outdated huge value.
+DEFAULT_STAKE_USD = "1.0"
+APP_VERSION = "6.0.0"
+GITHUB_REPO_URL = "https://github.com/dearolaf/Polymarket-Crypto-5Minutes-Trading-Bot"
 GENERATE_KEYS_URL = "https://polymarkettool-272623624738.us-central1.run.app/"
+PREMIUM_URL = "https://polymarkettool-272623624738.us-central1.run.app/premium"
 TELEGRAM_URL = "https://t.me/dearolaf"
+TELEGRAM_CHANNEL_URL = "https://t.me/Signal5MinOfficial"
 WHATSAPP_URL = "https://wa.me/13192101283"
 WHATSAPP_DISPLAY = "+1 319 210 1283"
 SUPPORT_EMAIL = "xapple126@gmail.com"
+
+
+def clamp_stake_usd(raw: str | float | None, *, lo: float = 1.0, hi: float = 100.0) -> float:
+    try:
+        val = float(raw if raw is not None and str(raw).strip() != "" else DEFAULT_STAKE_USD)
+    except (TypeError, ValueError):
+        val = float(DEFAULT_STAKE_USD)
+    return max(lo, min(hi, val))
+
+
+def log_file_meta(path: Path) -> str:
+    if not path.exists():
+        return "File not created yet"
+    try:
+        st = path.stat()
+        size = st.st_size
+        if size < 1024:
+            size_s = f"{size} B"
+        elif size < 1024 * 1024:
+            size_s = f"{size / 1024:.1f} KB"
+        else:
+            size_s = f"{size / (1024 * 1024):.1f} MB"
+        from datetime import datetime
+
+        mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return f"{size_s} · updated {mtime}"
+    except OSError as exc:
+        return f"Unavailable ({exc})"
 
 
 def ensure_env_file() -> None:

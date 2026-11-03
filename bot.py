@@ -491,7 +491,7 @@ def append_predictor_order_summary_line(
 BTC_SLUG_HOURS_AHEAD_DEFAULT = 6.0
 BTC_SLUG_COUNT_CAP_DEFAULT = 96   # ~8h of 5m slots + prior interval; keeps URL under typical nginx limits
 
-BOT_VERSION = "5.0.0"
+BOT_VERSION = "6.0.0"
 
 # ---------------------------------------------------------------------------
 # Lightweight predictor mode (Coinbase-based), for next 5m direction.
