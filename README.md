@@ -140,5 +140,4 @@ Setup, Premium, or bot questions — reach out anytime.
 |---------|---|
 | Telegram (updates) | [@Signal5MinOfficial](https://t.me/Signal5MinOfficial) |
 | Telegram (support) | [@dearolaf](https://t.me/dearolaf) |
-| WhatsApp | [+1 319 210 1283](https://wa.me/13192101283) |
 | Email | [xapple126@gmail.com](mailto:xapple126@gmail.com) |
