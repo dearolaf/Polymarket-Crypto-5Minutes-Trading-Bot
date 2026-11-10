@@ -139,5 +139,5 @@ Setup, Premium, or bot questions — reach out anytime.
 | Channel | |
 |---------|---|
 | Telegram (updates) | [@Signal5MinOfficial](https://t.me/Signal5MinOfficial) |
-| Telegram (support) | [@dearolaf](https://t.me/dearolaf) |
+| Telegram (support) | [@yesolaf](https://t.me/yesolaf) |
 | Email | [xapple126@gmail.com](mailto:xapple126@gmail.com) |

@@ -95,7 +95,7 @@ def render_upgrade_cta(title: str = "Upgrade to Premium") -> None:
     st.markdown(render_upgrade_contact_markdown())
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.link_button("Telegram @dearolaf", TELEGRAM_URL, use_container_width=True)
+        st.link_button("Telegram @yesolaf", TELEGRAM_URL, use_container_width=True)
     with c2:
         st.link_button(f"WhatsApp {WHATSAPP_DISPLAY}", WHATSAPP_URL, use_container_width=True)
     with c3:
@@ -701,7 +701,7 @@ def render_help() -> None:
         Contact:
 
         - Telegram updates: [@Signal5MinOfficial]({TELEGRAM_CHANNEL_URL})
-        - Telegram support: [@dearolaf]({TELEGRAM_URL})
+        - Telegram support: [@yesolaf]({TELEGRAM_URL})
         - WhatsApp: [{WHATSAPP_DISPLAY}]({WHATSAPP_URL})
         - Email: [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL})
 
@@ -724,7 +724,7 @@ def render_help() -> None:
         ### Support
 
         - [GitHub Issues]({GITHUB_REPO_URL}/issues)
-        - Telegram: [@dearolaf]({TELEGRAM_URL})
+        - Telegram: [@yesolaf]({TELEGRAM_URL})
 
         **Risk warning:** Trading involves loss. Always start in practice mode.
         """

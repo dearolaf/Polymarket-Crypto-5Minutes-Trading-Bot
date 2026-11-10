@@ -84,7 +84,7 @@ PREMIUM_WHY_BETTER: List[Dict[str, str]] = [
     {
         "title": "Priority support",
         "free": "GitHub Issues & community help.",
-        "premium": "Direct help via Telegram @dearolaf, WhatsApp, and email — faster answers for setup, tuning, and live trading.",
+        "premium": "Direct help via Telegram @yesolaf, WhatsApp, and email — faster answers for setup, tuning, and live trading.",
     },
     {
         "title": "Ongoing improvements",
@@ -127,7 +127,7 @@ To unlock **Premium**, contact us with any of the options below:
 
 | Channel | Contact |
 |---------|---------|
-| **Telegram** | [@dearolaf]({TELEGRAM_URL}) |
+| **Telegram** | [@yesolaf]({TELEGRAM_URL}) |
 | **WhatsApp** | [{WHATSAPP_DISPLAY}]({WHATSAPP_URL}) |
 | **Email** | [{SUPPORT_EMAIL}](mailto:{SUPPORT_EMAIL}) |
 
